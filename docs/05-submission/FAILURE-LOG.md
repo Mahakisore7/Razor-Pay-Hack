@@ -53,7 +53,92 @@ never true of real software.
 
 <!-- Newest first. Add entries as they happen. -->
 
-*No entries yet. The build begins at Phase 0.*
+### F-002 — import-linter silently constrained nothing
+**Date:** 2026-09-02 · **Phase:** P0 · **Severity:** medium
+
+**What broke**
+
+```
+Could not find package 'r' in your Python path.
+```
+
+**How it was found**
+
+Running `lint-imports` for the first time, immediately after writing the five
+boundary contracts.
+
+**Root cause**
+
+`root_packages = recoup` was written as an inline value. import-linter treats
+`root_packages` as a multi-value field and iterated the string character by
+character, so it looked for a package named `r`.
+
+**Fix**
+
+The indented list form:
+
+```ini
+root_packages =
+    recoup
+```
+
+A second, related error followed — `No matches for ignored import recoup.* ->
+recoup.platform`. The ignore was redundant (`recoup.platform` is not in the
+`layers` list, so the layering contract never constrained it) and import-linter
+correctly errors on an ignore that matches nothing. Removed.
+
+**What it changed about the design**
+
+This is the important part. The contract that forbids `recoup.policy` from
+reaching `anthropic` is the structural expression of the product's central
+promise (ADR-0005). Had this shipped unnoticed, CI would have reported a
+**passing** import-linter step while enforcing nothing at all — the worst
+possible failure mode for a guarantee, because it looks like a guarantee.
+
+So the phase-0 acceptance criteria that were already written (A0.4–A0.6) were
+executed as a deliberate exercise rather than a formality: each gate was tripped
+on purpose and observed to fail, then reverted. The policy/`anthropic` contract
+was verified to report `BROKEN`, mypy to reject an untyped function, and ruff to
+flag `datetime.now()` and `print`.
+
+**Generalised rule, now in the phase docs:** *a gate that has never been seen to
+fail is not known to work.* Every future quality gate gets the same treatment
+before it is trusted.
+
+---
+
+### F-001 — Package build failed on a readme path outside the project
+**Date:** 2026-09-02 · **Phase:** P0 · **Severity:** low
+
+**What broke**
+
+```
+ValueError: Readme path must be within the project directory: ../../README.md
+```
+
+`uv sync` reported exit 0 while the editable install of `recoup` had actually
+failed.
+
+**How it was found**
+
+`uv sync` output, on the first dependency install.
+
+**Root cause**
+
+`services/core/pyproject.toml` pointed `readme` at the monorepo root README.
+Hatchling requires the readme to live inside the package directory.
+
+**Fix**
+
+Removed the `readme` field. The root README is the canonical one and does not
+need to be duplicated into the package metadata.
+
+**What it changed about the design**
+
+Nothing structural — but it is a reminder that **a zero exit code is not proof
+of success.** `uv sync` returned 0 with a failed build inside it. Verification
+steps in the phase docs assert on the observable outcome (`import recoup`
+succeeding) rather than on a command's exit status.
 
 ---
 
