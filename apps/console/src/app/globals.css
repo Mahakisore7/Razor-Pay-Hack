@@ -1,0 +1,48 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 20 14% 8%;
+  --muted: 30 10% 96%;
+  --muted-foreground: 25 8% 40%;
+  --border: 25 10% 88%;
+  --accent: 38 92% 50%;
+  --accent-foreground: 20 14% 8%;
+  --destructive: 0 72% 51%;
+  --success: 142 71% 35%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: 20 14% 8%;
+    --foreground: 30 10% 96%;
+    --muted: 20 10% 14%;
+    --muted-foreground: 25 8% 65%;
+    --border: 20 10% 20%;
+    --accent: 38 92% 55%;
+    --accent-foreground: 20 14% 8%;
+    --destructive: 0 72% 60%;
+    --success: 142 60% 45%;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: 20 14% 8%;
+  --foreground: 30 10% 96%;
+  --muted: 20 10% 14%;
+  --muted-foreground: 25 8% 65%;
+  --border: 20 10% 20%;
+  --accent: 38 92% 55%;
+  --accent-foreground: 20 14% 8%;
+  --destructive: 0 72% 60%;
+  --success: 142 60% 45%;
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
