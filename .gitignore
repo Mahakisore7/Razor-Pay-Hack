@@ -17,6 +17,8 @@ node_modules/
 out/
 .turbo/
 *.tsbuildinfo
+playwright-report/
+test-results/
 
 # Environment - never commit
 .env

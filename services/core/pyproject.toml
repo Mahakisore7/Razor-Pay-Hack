@@ -2,7 +2,7 @@
 name = "recoup"
 version = "0.1.0"
 description = "Revenue recovery control plane for Indian payments"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 
 dependencies = [
@@ -106,7 +106,7 @@ show_error_codes = true
 files = ["src/recoup", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "uuid_utils.*"]
+module = ["testcontainers.*", "uuid_utils.*", "asyncpg.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
