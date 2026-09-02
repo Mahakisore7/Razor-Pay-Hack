@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Environment - never commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Build artefacts
+dist/
+build/
+
+# Benchmark output (published reports are committed explicitly)
+bench/reports/*
+!bench/reports/.gitkeep
+!bench/reports/published/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,20 @@
+# Normalise line endings across platforms
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.ico binary
+*.woff2 binary
+
+# Lockfiles: generated, collapse in diffs
+uv.lock linguist-generated=true -diff
+pnpm-lock.yaml linguist-generated=true -diff
+
+# Docs are the deliverable here, not vendored content
+docs/** linguist-documentation=false
