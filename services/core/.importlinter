@@ -1,0 +1,91 @@
+; Module boundary contracts.
+;
+; These are architecture, not style. A violation fails CI exactly as a missing
+; service would fail a call in a microservice deployment -- but at build time,
+; where it is cheaper to fix. See ADR-0002.
+;
+; Contract 4 is the one that matters most: it is the structural expression of
+; the product's central promise, that no model can influence whether an action
+; on a customer's money is permitted. See ADR-0005 and AI-DESIGN section 6.1.
+
+[importlinter]
+root_packages =
+    recoup
+include_external_packages = True
+
+; ---------------------------------------------------------------------------
+[importlinter:contract:domain-is-pure]
+name = Domain is pure -- no framework, no I/O, no model, no clock
+type = forbidden
+source_modules =
+    recoup.domain
+forbidden_modules =
+    fastapi
+    sqlalchemy
+    anthropic
+    httpx
+    redis
+    structlog
+    recoup.api
+    recoup.gateway
+    recoup.execution
+    recoup.platform
+
+; ---------------------------------------------------------------------------
+[importlinter:contract:nothing-imports-api]
+name = Nothing imports the API layer
+type = forbidden
+source_modules =
+    recoup.domain
+    recoup.policy
+    recoup.detection
+    recoup.diagnosis
+    recoup.planning
+    recoup.execution
+    recoup.attribution
+    recoup.gateway
+    recoup.audit
+    recoup.bench
+forbidden_modules =
+    recoup.api
+
+; ---------------------------------------------------------------------------
+[importlinter:contract:side-effects-are-confined]
+name = Only execution and gateway may perform outbound side effects
+type = forbidden
+source_modules =
+    recoup.domain
+    recoup.policy
+    recoup.detection
+    recoup.planning
+    recoup.attribution
+    recoup.audit
+forbidden_modules =
+    httpx
+    redis
+
+; ---------------------------------------------------------------------------
+; The load-bearing contract. Do not relax this without superseding ADR-0005.
+[importlinter:contract:policy-is-model-free]
+name = Policy engine cannot reach a language model
+type = forbidden
+source_modules =
+    recoup.policy
+forbidden_modules =
+    anthropic
+    recoup.diagnosis
+    recoup.planning
+
+; ---------------------------------------------------------------------------
+[importlinter:contract:layering]
+name = Dependencies point inward
+type = layers
+layers =
+    recoup.api
+    recoup.bench
+    recoup.execution
+    recoup.planning
+    recoup.diagnosis
+    recoup.detection
+    recoup.policy
+    recoup.domain
