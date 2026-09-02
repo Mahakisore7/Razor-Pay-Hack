@@ -238,7 +238,7 @@ make demo GATEWAY=live
 
 Webhooks in development are tunnelled (`make tunnel` wraps ngrok) and the public
 URL registered in the Razorpay dashboard. Documented in
-[`docs/03-delivery/PHASE-05-live-integration.md`](../03-delivery/PHASE-05-live-integration.md).
+[`docs/03-delivery/PHASE-07-live-integration.md`](../03-delivery/PHASE-07-live-integration.md).
 
 ## 9. What is real and what is simulated
 
