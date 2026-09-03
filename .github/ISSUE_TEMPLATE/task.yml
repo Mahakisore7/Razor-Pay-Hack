@@ -1,0 +1,66 @@
+name: Task
+description: A unit of planned work (a phase-doc task, a chore, a follow-up).
+labels: ["task"]
+body:
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - phase-0
+        - phase-1
+        - phase-2
+        - phase-3
+        - phase-4
+        - phase-5
+        - phase-6
+        - phase-7
+        - phase-8
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Matches the commit scope this will land under (GIT-WORKFLOW §2.2).
+      options:
+        - domain
+        - policy
+        - detection
+        - diagnosis
+        - planning
+        - execution
+        - attribution
+        - gateway
+        - audit
+        - bench
+        - api
+        - console
+        - infra
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: One paragraph -- what this task delivers.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The requirement (FR-n / TR-n) or phase-doc task ID this closes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Stated before work starts, per GIT-WORKFLOW §5.
+    validations:
+      required: true

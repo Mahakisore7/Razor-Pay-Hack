@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is broken.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options:
+        - phase-0
+        - phase-1
+        - phase-2
+        - phase-3
+        - phase-4
+        - phase-5
+        - phase-6
+        - phase-7
+        - phase-8
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Matches the commit scope this will be fixed under (GIT-WORKFLOW §2.2).
+      options:
+        - domain
+        - policy
+        - detection
+        - diagnosis
+        - planning
+        - execution
+        - attribution
+        - gateway
+        - audit
+        - bench
+        - api
+        - console
+        - infra
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-broke
+    attributes:
+      label: What broke
+      description: Symptom, as observed. Include the actual error output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this to count as fixed, stated before work starts (GIT-WORKFLOW §5).
+    validations:
+      required: true
