@@ -1,0 +1,12 @@
+# Extends gitleaks' default ruleset rather than replacing it -- the only
+# thing this file adds is the same allowance ruff's bandit rules already
+# make (pyproject.toml [tool.ruff.lint.per-file-ignores], S105/S106):
+# obviously-fake credentials in test fixtures are not a leak.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures construct Settings with fake secret values to assert masking (T2, TR-75) -- not real credentials."
+paths = [
+  '''services/core/tests/.*''',
+]
