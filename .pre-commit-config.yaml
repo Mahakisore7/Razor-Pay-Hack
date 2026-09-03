@@ -1,0 +1,82 @@
+# ENGINEERING-STANDARDS §10. Never bypassed with --no-verify -- skipping a
+# hook is deciding you did not forget anything, at exactly the moment you
+# most likely did.
+#
+# Every tool below runs as a local hook through `uv run`/`pnpm` rather than
+# a separately-versioned pre-commit mirror, deliberately: that pins each one
+# to the exact version in uv.lock / pnpm-lock.yaml -- the same one CI runs --
+# instead of whatever version a mirror repo happens to be on.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: bash -c 'cd services/core && uv run ruff check --fix .'
+        language: system
+        files: ^services/core/
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: bash -c 'cd services/core && uv run ruff format .'
+        language: system
+        files: ^services/core/
+        types: [python]
+
+      - id: mypy
+        name: mypy --strict
+        entry: bash -c 'cd services/core && uv run mypy'
+        language: system
+        files: ^services/core/
+        pass_filenames: false
+
+      - id: import-linter
+        name: import-linter (module boundaries)
+        entry: bash -c 'cd services/core && uv run lint-imports'
+        language: system
+        files: ^services/core/
+        pass_filenames: false
+
+      - id: console-lint
+        name: eslint (console)
+        entry: bash -c 'cd apps/console && pnpm lint'
+        language: system
+        files: ^apps/console/
+        pass_filenames: false
+
+      - id: console-format
+        name: prettier --check (console)
+        entry: bash -c 'cd apps/console && pnpm format'
+        language: system
+        files: ^apps/console/
+        pass_filenames: false
+
+      - id: console-types
+        name: tsc --strict (console)
+        entry: bash -c 'cd apps/console && pnpm typecheck'
+        language: system
+        files: ^apps/console/
+        pass_filenames: false
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.26.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        additional_dependencies: ["@commitlint/config-conventional"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml

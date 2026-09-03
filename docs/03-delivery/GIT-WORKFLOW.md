@@ -75,10 +75,14 @@ Enforced by commitlint in pre-commit and CI.
 
 ### 2.2 Scopes
 
-Match the module structure, so `git log --grep` is useful:
+Code scopes match the module structure, so `git log --grep` is useful:
 
 `domain` · `policy` · `detection` · `diagnosis` · `planning` · `execution` ·
 `attribution` · `gateway` · `audit` · `bench` · `api` · `console` · `infra`
+
+`docs` commits scope to the `docs/` section touched instead, `docs/NN-<name>/`
+minus the number: `overview` · `product` · `technical` · `delivery` · `adr` ·
+`submission`. Both lists are enforced together by `commitlint.config.js`.
 
 ### 2.3 Rules
 

@@ -45,13 +45,116 @@ never true of real software.
 
 | ID | Issue | Impact | Status |
 |---|---|---|---|
-| *(none yet — build starts at P0)* | | | |
+| O-1 | `gh` CLI is unauthenticated in the dev environment | PRs and branch protection on `main` (T0.7) can't be set up from the CLI; branches are pushed and left for manual PR creation | Open — needs `gh auth login` or manual setup via the GitHub web UI |
 
 ---
 
 ## Entries
 
 <!-- Newest first. Add entries as they happen. -->
+
+### F-007 — a "safe" git revert took uncommitted work with it
+**Date:** 2026-09-03 · **Phase:** P0 · **Severity:** low
+
+**What broke**
+
+While deliberately tripping the gitleaks gate (the same "verify it actually
+fails" discipline as F-002), a scratch commit with a fake secret was
+undone with `git reset --hard <old-sha>`. That SHA was correct for undoing
+the scratch commit, but the working tree at the time also held unrelated,
+legitimate uncommitted edits — a dependency security patch and CI-prep
+config changes made moments earlier. `reset --hard` discards *all*
+uncommitted changes to tracked files, not just the ones related to what
+you're trying to undo, and none of that was pushed anywhere to fall back on.
+
+**How it was found**
+
+Immediately — Edit/Write tool results on the next file touched reported
+the file's on-disk content no longer matched what had just been written,
+which was the tell that something upstream had reverted it.
+
+**Root cause**
+
+Treated "undo my last commit" as interchangeable with "reset to a known-good
+SHA," when the two are only equivalent if the working tree is otherwise
+clean. It wasn't. `reset --hard HEAD~1` (relative, and only ever safe on a
+tree with nothing else uncommitted) is a different operation from
+`reset --hard <sha>` (absolute, and blind to everything that changed since).
+
+**Fix**
+
+Recreated the three lost edits from memory (their content was known
+precisely, having just been written) and regenerated the two lockfiles
+from the restored source files rather than by hand. No data was
+unrecoverable — the fix was re-deriving, not un-losing.
+
+**What it changed about the design**
+
+Not the codebase — the procedure. **A destructive git operation used to
+undo a scratch commit must run on a working tree with nothing else
+uncommitted first.** In this session, that now means: commit everything
+legitimate, confirm `git status` is clean, *then* make the scratch commit
+being tested, so the revert afterward is an unambiguous `reset --hard
+HEAD~1` with nothing else at stake. Applied for real two sections later in
+this same log, when the same gate needed re-tripping with a better fake
+secret.
+
+---
+
+### F-006 — a config key that used to work stopped silently, one major version later
+**Date:** 2026-09-02 · **Phase:** P0 · **Severity:** medium
+
+**What broke**
+
+```
+[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: @tailwindcss/oxide@4.1.14, esbuild@0.28.2, sharp@0.34.5, unrs-resolver@1.12.2
+```
+
+`pnpm install --frozen-lockfile` inside the console's Docker build (T0.5)
+failed outright on a fresh container, even with
+`package.json#pnpm.onlyBuiltDependencies` listing exactly those four
+packages.
+
+**How it was found**
+
+First `docker compose build console`. Confusingly, the *identical* install
+succeeded cleanly on the host machine every time, frozen lockfile and all —
+which pointed at environment state, not the config, and cost real time
+investigating the wrong layer (BuildKit cache mounts, a stale global pnpm
+store) before the actual cause surfaced.
+
+**Root cause**
+
+`pnpm config get onlyBuiltDependencies` echoed the array back correctly,
+and `pnpm approve-builds --all` reported nothing pending — both signals
+that looked like the config was live. It wasn't: pnpm v11 replaced
+`package.json#pnpm.onlyBuiltDependencies` (an array, pnpm v10) with
+`pnpm-workspace.yaml`'s `allowBuilds` (a `name -> boolean` map). The old
+key is silently ignored rather than rejected, so nothing in the tool's own
+output said the config was stale. The host machine only ever "worked" by
+coincidence, unrelated to this file: pnpm v11 also tracks per-user, global
+build approvals outside any project, and this host had already approved
+these exact common packages once, in some earlier, unrelated project.
+A brand-new container has no such history, so it was the only environment
+telling the truth.
+
+**Fix**
+
+`pnpm-workspace.yaml`'s `allowBuilds` map, with the four packages listed
+explicitly. Verified in an actual fresh Linux container (not the host) with
+a warm-but-otherwise-clean pnpm store, so the fix was confirmed against the
+environment that had been failing, not the one that had been accidentally
+passing.
+
+**What it changed about the design**
+
+**A config value that "looks read" is not the same as a config value that
+is applied** — `pnpm config get` will happily echo a key it does no longer
+act on. And more generally: when local and CI/Docker disagree on something
+that reads the same files, the local machine's *history* — not just its
+current config — is a live suspect, not just the config itself.
+
+---
 
 ### F-005 — a deterministic Redis protocol error that took an afternoon to trace to two unrelated bugs
 **Date:** 2026-09-02 · **Phase:** P0 · **Severity:** medium
