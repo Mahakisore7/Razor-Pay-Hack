@@ -15,3 +15,13 @@ allowBuilds:
   esbuild: true
   sharp: true
   unrs-resolver: true
+
+# next, @tailwindcss/postcss, and vite (via @vitejs/plugin-react) each pull
+# their own postcss below 8.5.18 (source-map path traversal,
+# GHSA-r28c-9q8g-f849 / GHSA-6g55-p6wh-862q), and next pulls sharp below
+# 0.35.0 (libvips CVEs, GHSA-f88m-g3jw-g9cj) -- both caught by `pnpm
+# audit`. Bumping our own direct devDependency versions doesn't touch
+# these transitive resolutions, so both are forced here instead.
+overrides:
+  sharp: ">=0.35.0"
+  postcss: ">=8.5.18"
