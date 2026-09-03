@@ -113,7 +113,7 @@ show_error_codes = true
 files = ["src/recoup", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "uuid_utils.*", "asyncpg.*"]
+module = ["testcontainers.*", "uuid_utils.*", "asyncpg.*", "scipy.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
