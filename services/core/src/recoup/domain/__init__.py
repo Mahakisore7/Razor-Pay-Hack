@@ -3,6 +3,7 @@
 No I/O, no framework imports, no clock access, no randomness. Everything here
 is a function of its inputs, which is what makes the pipeline replayable."""
 
+from recoup.domain.decline import DeclineCategory, RetryHorizon
 from recoup.domain.identifiers import (
     ActionId,
     AuditEventId,
@@ -20,7 +21,9 @@ __all__ = [
     "CaseId",
     "Currency",
     "CustomerRef",
+    "DeclineCategory",
     "Money",
+    "RetryHorizon",
     "SignalId",
     "hash_contact",
     "uuid7",
