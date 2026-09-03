@@ -42,6 +42,7 @@ dev = [
     "ruff>=0.8",
     "import-linter>=2.1",
     "types-pyyaml>=6.0",
+    "pip-audit>=2.7",
 ]
 
 [build-system]
@@ -137,6 +138,11 @@ branch = true
 omit = ["*/migrations/*"]
 
 [tool.coverage.report]
+# Per-module floors (policy/attribution 100% branch, domain >=95% line --
+# ENGINEERING-STANDARDS §4.3) apply once those modules hold real code; they
+# are still empty package stubs. This is the one number CI can honestly
+# enforce today, set at the "everything else" floor.
+fail_under = 85
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
