@@ -6,9 +6,7 @@ export const metadata: Metadata = {
   description: "Revenue recovery control plane operations console",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
       <body className="min-h-screen antialiased">{children}</body>
