@@ -1,0 +1,175 @@
+# Local / demo stack (ARCHITECTURE §9). Run with the repo root as the
+# project directory, so build contexts and the volume mount below resolve
+# from there (not from infra/, this file's own location) and the root
+# .env.example lines up:
+#
+#   docker compose -f infra/docker-compose.yml --project-directory . up
+#
+# `make dev` does exactly that.
+name: recoup
+
+x-python-service: &python-service
+  build:
+    context: services/core
+    dockerfile: Dockerfile
+  environment: &python-env
+    ENVIRONMENT: ${ENVIRONMENT:-development}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-recoup}:${POSTGRES_PASSWORD:-recoup}@postgres:5432/${POSTGRES_DB:-recoup}
+    REDIS_URL: redis://redis:6379/0
+    # Unset by default -- the simulator gateway needs none of these. Setting
+    # them in .env is what switches diagnosis/execution to live services in
+    # later phases (ARCHITECTURE §8); Phase 0 code never reads them.
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+    RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+    RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-recoup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recoup}
+      POSTGRES_DB: ${POSTGRES_DB:-recoup}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-recoup} -d ${POSTGRES_DB:-recoup}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  api:
+    <<: *python-service
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://localhost:8000/health/live', timeout=2).status == 200 else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # Placeholder processes -- see recoup.cli._run_placeholder_process. They
+  # exist in the stack now, with real healthchecks, so the container shape
+  # (image, env, healthcheck wiring) doesn't have to change when Phase 2/3
+  # give them actual work to do.
+  worker:
+    <<: *python-service
+    command: ["worker"]
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import time,sys,os; p='/tmp/recoup-worker.heartbeat'; sys.exit(0 if (os.path.exists(p) and time.time() - float(open(p).read()) < 30) else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  scheduler:
+    <<: *python-service
+    command: ["scheduler"]
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import time,sys,os; p='/tmp/recoup-scheduler.heartbeat'; sys.exit(0 if (os.path.exists(p) and time.time() - float(open(p).read()) < 30) else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  console:
+    build:
+      context: apps/console
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_PORT:-8000}
+    ports:
+      - "${CONSOLE_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # Traces and metrics for local runs (T0.5). Neither is in any depends_on
+  # chain -- an observability sidecar being slow to start must never block
+  # the services it observes.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686" # UI
+      - "4318:4318" # OTLP/HTTP receiver
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:16686 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/healthy >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:

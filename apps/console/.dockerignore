@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+playwright-report/
+test-results/
+tests/
+.git/
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore

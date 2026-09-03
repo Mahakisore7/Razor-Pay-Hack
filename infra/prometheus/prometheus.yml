@@ -1,0 +1,12 @@
+# Scrapes only what actually exposes metrics today. worker/scheduler are
+# Phase 0 placeholders with no /metrics endpoint (see recoup.cli) -- adding
+# targets for them now would just be two permanently-down scrape targets.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: recoup-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
