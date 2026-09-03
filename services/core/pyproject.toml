@@ -124,6 +124,7 @@ markers = [
     "integration: requires Postgres and Redis (testcontainers)",
     "e2e: full pipeline test",
     "slow: excluded from the fast feedback loop",
+    "llm: calls a real LLM API -- excluded by `make test-no-llm` (ROADMAP P5)",
 ]
 filterwarnings = ["error"]
 

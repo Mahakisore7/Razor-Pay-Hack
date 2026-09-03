@@ -5,6 +5,9 @@ Phase 2, `bench run` in Phase 3. Phase 0 ships the entry point itself and a
 `serve` command, so the API is runnable without reaching into uvicorn directly.
 """
 
+import time
+from pathlib import Path
+
 import typer
 import uvicorn
 
@@ -29,6 +32,50 @@ def serve(
 ) -> None:
     """Run the API service."""
     uvicorn.run("recoup.api.app:app", host=host, port=port, reload=reload)
+
+
+@app.command()
+def worker(
+    poll_interval: float = typer.Option(5.0, help="Seconds between idle heartbeats."),
+) -> None:
+    """Run the worker pool.
+
+    Placeholder: the outbox and executor it will claim from don't exist yet
+    (ROADMAP P2/P3). This idles and writes a heartbeat so the compose stack
+    (T0.5) has a real, health-checkable process to bring up now rather than
+    inventing one later when the container shape is harder to change.
+    """
+    _run_placeholder_process("worker", poll_interval)
+
+
+@app.command()
+def scheduler(
+    poll_interval: float = typer.Option(5.0, help="Seconds between idle heartbeats."),
+) -> None:
+    """Run the scheduler.
+
+    Placeholder: there is no outbox to tick yet (ROADMAP P2/P3). See `worker`
+    for why this exists in Phase 0 anyway.
+    """
+    _run_placeholder_process("scheduler", poll_interval)
+
+
+def _run_placeholder_process(name: str, poll_interval: float) -> None:
+    from recoup.platform.config import get_settings
+    from recoup.platform.logging import configure_logging, get_logger
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    logger = get_logger(f"recoup.{name}")
+    heartbeat_file = Path(f"/tmp/recoup-{name}.heartbeat")  # noqa: S108 -- container-local, not shared
+
+    logger.info("placeholder_process_started", process=name, poll_interval=poll_interval)
+    # A plain blocking loop, deliberately -- there is no I/O to be concurrent
+    # with yet. `async def` would invite the false impression that this
+    # already does the work the real worker/scheduler will do.
+    while True:
+        heartbeat_file.write_text(str(time.time()))
+        time.sleep(poll_interval)
 
 
 if __name__ == "__main__":
