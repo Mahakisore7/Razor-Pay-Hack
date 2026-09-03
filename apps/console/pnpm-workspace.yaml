@@ -1,0 +1,17 @@
+# pnpm v11 gates native install/postinstall scripts behind an explicit
+# allowlist (replaced pnpm v10's package.json "pnpm.onlyBuiltDependencies"
+# array with this map -- https://pnpm.io/settings#allowbuilds). Without it,
+# `pnpm install --frozen-lockfile` in a fresh environment (no prior
+# interactive `pnpm approve-builds`, e.g. Docker) fails outright rather
+# than silently skipping the scripts.
+#
+# These four are transitive native-binary deps -- tailwind's oxide engine,
+# esbuild, sharp, unrs-resolver -- pulled in by tailwindcss/vitest/eslint.
+# All well-known; the lockfile's own integrity check already ran before
+# this ever matters, so this only approves *running their install
+# scripts*, not what versions get installed.
+allowBuilds:
+  "@tailwindcss/oxide": true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true

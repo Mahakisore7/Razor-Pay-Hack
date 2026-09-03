@@ -15,6 +15,10 @@ const eslintConfig = [
       "playwright-report/**",
       "test-results/**",
       "coverage/**",
+      // Next-managed, not ours to fix -- its own comment says not to edit
+      // it, and its typed-routes reference trips
+      // @typescript-eslint/triple-slash-reference once a build has run.
+      "next-env.d.ts",
     ],
   },
   {
