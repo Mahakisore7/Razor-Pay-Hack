@@ -9,10 +9,11 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-setup: ## Install both toolchains (uv sync, pnpm install, Playwright browsers)
+setup: ## Install both toolchains, Playwright browsers, and git hooks
 	$(CORE) uv sync
 	$(CONSOLE) pnpm install --frozen-lockfile
 	$(CONSOLE) pnpm exec playwright install chromium
+	uvx pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 dev: ## Bring up the full compose stack (Postgres, Redis, api, worker, scheduler, console, Jaeger, Prometheus)
 	$(COMPOSE) up --build

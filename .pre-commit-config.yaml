@@ -2,10 +2,10 @@
 # hook is deciding you did not forget anything, at exactly the moment you
 # most likely did.
 #
-# ruff/mypy/import-linter run as local hooks through `uv run` rather than
-# each tool's own pre-commit mirror, deliberately: that pins them to the
-# exact version in services/core/uv.lock -- the same one CI runs -- instead
-# of whatever version a separately-maintained mirror repo happens to be on.
+# Every tool below runs as a local hook through `uv run`/`pnpm` rather than
+# a separately-versioned pre-commit mirror, deliberately: that pins each one
+# to the exact version in uv.lock / pnpm-lock.yaml -- the same one CI runs --
+# instead of whatever version a mirror repo happens to be on.
 repos:
   - repo: local
     hooks:
@@ -35,6 +35,27 @@ repos:
         entry: bash -c 'cd services/core && uv run lint-imports'
         language: system
         files: ^services/core/
+        pass_filenames: false
+
+      - id: console-lint
+        name: eslint (console)
+        entry: bash -c 'cd apps/console && pnpm lint'
+        language: system
+        files: ^apps/console/
+        pass_filenames: false
+
+      - id: console-format
+        name: prettier --check (console)
+        entry: bash -c 'cd apps/console && pnpm format'
+        language: system
+        files: ^apps/console/
+        pass_filenames: false
+
+      - id: console-types
+        name: tsc --strict (console)
+        entry: bash -c 'cd apps/console && pnpm typecheck'
+        language: system
+        files: ^apps/console/
         pass_filenames: false
 
   - repo: https://github.com/gitleaks/gitleaks
