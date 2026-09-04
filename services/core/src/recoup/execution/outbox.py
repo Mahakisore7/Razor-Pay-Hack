@@ -34,6 +34,7 @@ from recoup.platform.models import ActionRow, ScheduledActionRow
 
 __all__ = [
     "DEFAULT_CLAIM_TTL",
+    "cancel_pending_and_claimed",
     "claim_due_batch",
     "mark_done",
     "mark_failed",
@@ -147,6 +148,27 @@ async def reclaim_expired_claims(session: AsyncSession, clock: Clock) -> int:
     )
     result = await session.execute(stmt)
     await session.commit()
+    return cast("CursorResult[Any]", result).rowcount
+
+
+async def cancel_pending_and_claimed(session: AsyncSession, case_id: CaseId) -> int:
+    """Every not-yet-`done`/`failed` scheduled action for `case_id`
+    becomes `cancelled` -- the mechanical half of A2.8's "opt-out
+    mid-plan cancels remaining steps." Does not commit: the caller
+    (`execution.suppression.suppress_case`, T2.10) closes the case in
+    the same transaction, so a crash between the two never leaves a
+    case `SUPPRESSED` with steps still live, or vice versa.
+    """
+    stmt = (
+        update(ScheduledActionRow)
+        .where(
+            ScheduledActionRow.case_id == case_id,
+            ScheduledActionRow.status.in_(("pending", "claimed")),
+        )
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
     return cast("CursorResult[Any]", result).rowcount
 
 
