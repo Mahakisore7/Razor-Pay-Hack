@@ -60,6 +60,89 @@ def scheduler(
     _run_placeholder_process("scheduler", poll_interval)
 
 
+@app.command("import-events")
+def import_events(
+    path: Path = typer.Argument(..., help="JSONL file, one Razorpay webhook body per line."),
+) -> None:
+    """Bulk-import historical webhook records into `raw_events` (T2.1).
+
+    Skips HMAC verification -- these are already-trusted exported records,
+    not live deliveries -- but otherwise takes the same parse, categorize,
+    and durably-store path as the webhook route, so a record already
+    present (matched by the same `sha256(raw_body)` dedup key) is a no-op
+    (TR-3) and a line that fails to parse is stored flagged, not dropped
+    (TR-5), exactly as it would be over HTTP (TR-4: interpretation is
+    re-runnable over what is already stored, without re-fetching).
+    """
+    import asyncio
+
+    # Read synchronously here, in the sync command, rather than inside the
+    # async worker below -- a blocking `Path.read_text` call from inside
+    # `async def` code holds up the event loop for no reason (ASYNC240).
+    lines = path.read_text("utf-8").splitlines()
+    asyncio.run(_import_events(lines))
+
+
+async def _import_events(lines: list[str]) -> None:
+    import hashlib
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from recoup.gateway.ingestion import (
+        RAZORPAY_SOURCE,
+        UnparseableEventError,
+        parse_razorpay_event,
+        store_raw_event,
+    )
+    from recoup.platform.clock import SystemClock
+    from recoup.platform.config import get_settings
+    from recoup.platform.logging import configure_logging, get_logger
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    logger = get_logger("recoup.cli.import_events")
+    clock = SystemClock()
+
+    # A dedicated engine, not the process-wide `lru_cache`d one
+    # `platform.db.get_sessionmaker` hands a long-running server -- this
+    # command is one-shot, and the event loop `asyncio.run` (above) gives
+    # it closes the moment this coroutine returns, so the engine must be
+    # created *and disposed* inside that same loop rather than left open
+    # for a singleton that assumes the process keeps running.
+    engine = create_async_engine(settings.database_url)
+    inserted = duplicates = flagged = 0
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            for line_no, raw_line in enumerate(lines, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                raw_body = line.encode("utf-8")
+                provider_event_id = hashlib.sha256(raw_body).hexdigest()
+                try:
+                    event_type, payload = parse_razorpay_event(raw_body)
+                except UnparseableEventError as exc:
+                    logger.warning("import_line_unparseable", line=line_no, error=str(exc))
+                    event_type = "_unparseable"
+                    payload = {"_ingestion_error": "unparseable_json", "raw_line": line}
+                    flagged += 1
+
+                was_new = await store_raw_event(
+                    session,
+                    clock,
+                    source=RAZORPAY_SOURCE,
+                    event_type=event_type,
+                    provider_event_id=provider_event_id,
+                    payload=payload,
+                )
+                inserted += was_new
+                duplicates += not was_new
+    finally:
+        await engine.dispose()
+
+    typer.echo(f"imported {inserted}, skipped {duplicates} duplicate(s), {flagged} unparseable")
+
+
 def _run_placeholder_process(name: str, poll_interval: float) -> None:
     from recoup.platform.config import get_settings
     from recoup.platform.logging import configure_logging, get_logger

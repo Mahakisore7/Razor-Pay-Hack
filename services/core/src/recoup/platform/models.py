@@ -183,15 +183,27 @@ class MandateRow(Base, _UpdatedAtMixin):
 class RawEvent(Base, _CreatedAtMixin):
     """The unprocessed webhook/API payload a signal was detected from.
     Retained 90 days (DATA-MODEL SS7) to allow detector re-runs; the
-    detectors that populate this are Phase 2 (L1-L3) work."""
+    detectors that populate this are Phase 2 (L1-L3) work.
+
+    `provider_event_id` is what makes a redelivery a no-op (TR-3). Razorpay's
+    webhook body carries no delivery-level id of its own (only resource ids,
+    which repeat across an object's lifecycle) -- so ingestion derives it as
+    `sha256(raw_body)`, which is stable across a redelivery of the same
+    bytes and never collides across genuinely different events."""
 
     __tablename__ = "raw_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     source: Mapped[str]  # e.g. "razorpay_webhook"
     event_type: Mapped[str]  # e.g. "payment.failed"
+    provider_event_id: Mapped[str]
     payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    decline_category: Mapped[str | None]
     received_at: Mapped[datetime]
+
+    __table_args__ = (
+        UniqueConstraint("provider_event_id", name="uq_raw_events_provider_event_id"),
+    )
 
 
 # --- Signals and cases (DOMAIN-MODEL SS3-4) ----------------------------------
