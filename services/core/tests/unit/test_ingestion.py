@@ -40,6 +40,27 @@ _PAYMENT_CAPTURED = {
     "created_at": 1_700_000_100,
 }
 
+_SUBSCRIPTION_CHARGE_FAILED = {
+    "entity": "event",
+    "event": "subscription.charged",
+    "contains": ["payment", "subscription"],
+    "payload": {
+        "payment": {
+            "entity": {"id": "pay_789", "error_reason": "mandate_revoked"},
+        },
+        "subscription": {"entity": {"id": "sub_1"}},
+    },
+    "created_at": 1_700_000_200,
+}
+
+_SUBSCRIPTION_HALTED = {
+    "entity": "event",
+    "event": "subscription.halted",
+    "contains": ["subscription"],
+    "payload": {"subscription": {"entity": {"id": "sub_1", "customer_id": "cust_1"}}},
+    "created_at": 1_700_000_300,
+}
+
 
 # --- parse_razorpay_event -----------------------------------------------------
 
@@ -78,8 +99,20 @@ def test_extract_decline_reason_reads_the_nested_error_reason() -> None:
     assert reason == "payment_failed_due_to_insufficient_funds"
 
 
-def test_extract_decline_reason_is_none_for_a_non_payment_event() -> None:
-    assert extract_decline_reason("subscription.halted", _PAYMENT_FAILED) is None
+def test_extract_decline_reason_is_none_when_no_payment_entity_is_present() -> None:
+    """`subscription.halted` carries no nested payment entity at all --
+    the structural `.get`/`isinstance` chain returns None rather than
+    raising on a payload shaped nothing like `payload.payment.entity`."""
+    assert extract_decline_reason("subscription.halted", _SUBSCRIPTION_HALTED) is None
+
+
+def test_extract_decline_reason_reads_it_from_a_failed_subscription_charge() -> None:
+    """A failed `subscription.charged` carries the same nested payment
+    shape a one-time `payment.failed` does (RAZORPAY-INTEGRATION SS4.1's
+    L2 mapping) -- this is not gated on `event_type` any more than the
+    payment-entity extraction itself is."""
+    reason = extract_decline_reason("subscription.charged", _SUBSCRIPTION_CHARGE_FAILED)
+    assert reason == "mandate_revoked"
 
 
 def test_extract_decline_reason_is_none_when_absent_from_a_payment_event() -> None:
