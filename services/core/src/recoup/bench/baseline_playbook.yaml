@@ -1,0 +1,74 @@
+# T3.3: the benchmark's baseline arm -- deliberately naive, deliberately
+# competent. Every case gets the exact same three retries and one generic
+# dunning email, regardless of decline category or leak class: no
+# diagnosis-driven routing, no dynamic cost ceiling, no root-cause
+# branching. This is what a good engineer builds in a weekend, and it is
+# the comparison that actually matters against the diagnosis-driven
+# treatment arm -- not a strawman.
+
+id: baseline-naive
+version: 1
+
+applies_to:
+  # Never matched through `select_playbook`'s diagnosis-driven routing
+  # (T2.4) -- `recoup.bench.baseline` loads this file directly for
+  # arm==baseline cases, bypassing diagnosis entirely. `applies_to` is
+  # required by the schema; this value is a placeholder that is
+  # structurally unreachable rather than a real routing key.
+  root_cause: _baseline_arm_never_routed
+  leak_classes: [L1, L2, L3]
+
+# 10.0 -- the schema's own maximum. T3.3 calls for "no cost ceiling"; the
+# closest this schema can express that is a ceiling generous enough to
+# never actually bind against these steps' own (small, fixed) costs.
+cost_ceiling_pct: 10.0
+max_attempts: 3
+max_case_age_days: 7
+
+steps:
+  # Three gateway-routed retries at fixed offsets from plan creation --
+  # not chained via `relative`, since "fixed retries at T+1h, T+24h,
+  # T+72h" is three fixed points on the same clock, not one delay
+  # stacked on the previous step's own due_at.
+  - id: retry_1
+    channel: payment_retry
+    timing:
+      policy: fixed
+      offset_hours: 1
+    expected_cost_paise: 0
+    consumes_mandate_budget: true
+    guard:
+      decline_retryable: true
+
+  # The one generic dunning email -- same content regardless of decline
+  # category (no diagnosis-driven routing). Unlike the gateway-routed
+  # retries, an actual message send has a real (if nominal) per-send
+  # cost, modelled here rather than at zero like the rest of this
+  # playbook, so T3.6's cost-per-rupee-recovered metric has something
+  # non-trivial to divide by for this arm.
+  - id: dunning_email
+    channel: email
+    timing:
+      policy: fixed
+      offset_hours: 2
+    expected_cost_paise: 20
+
+  - id: retry_2
+    channel: payment_retry
+    timing:
+      policy: fixed
+      offset_hours: 24
+    expected_cost_paise: 0
+    consumes_mandate_budget: true
+    guard:
+      decline_retryable: true
+
+  - id: retry_3
+    channel: payment_retry
+    timing:
+      policy: fixed
+      offset_hours: 72
+    expected_cost_paise: 0
+    consumes_mandate_budget: true
+    guard:
+      decline_retryable: true
