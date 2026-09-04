@@ -1,0 +1,24 @@
+# Razorpay `error_reason` -> canonical DeclineCategory mapping
+# (RAZORPAY-INTEGRATION.md SS5, DOMAIN-MODEL.md SS2.3). Versioned and
+# reviewable as data, not buried in an if/elif chain. A reason not listed
+# here categorises as UNKNOWN -- conservative by default, since an unmapped
+# failure is a gap in our knowledge, not permission to guess.
+
+mappings:
+  payment_failed_due_to_insufficient_funds: INSUFFICIENT_FUNDS
+  issuer_down: ISSUER_DOWN
+  gateway_technical_error: ISSUER_DOWN
+  payment_timed_out: NETWORK_TIMEOUT
+  card_expired: EXPIRED_INSTRUMENT
+  invalid_vpa: INVALID_INSTRUMENT
+  invalid_card_number: INVALID_INSTRUMENT
+  mandate_revoked: MANDATE_REVOKED
+  mandate_cancelled: MANDATE_REVOKED
+  payment_declined_by_issuer: ISSUER_DECLINED
+  payment_failed_due_to_risk: RISK_BLOCKED
+  mandate_representation_limit_exceeded: MANDATE_EXHAUSTED
+  payment_failed_due_to_mandate_amount_exceeded: MANDATE_AMOUNT_EXCEEDED
+  payment_failed_due_to_limit_exceeded: LIMIT_EXCEEDED
+  authentication_failed: AUTHENTICATION_FAILED
+  otp_validation_failed: AUTHENTICATION_FAILED
+  payment_cancelled_by_customer: CUSTOMER_ABANDONED

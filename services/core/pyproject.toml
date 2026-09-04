@@ -59,6 +59,12 @@ packages = ["src/recoup"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# Alembic-generated revision scripts, not hand-written: autogenerate emits
+# its own boilerplate (old-style typing imports, one statement per column
+# regardless of length) that a house style rule would fight rather than
+# improve. They are still hand-reviewed for correctness (DATA-MODEL SS6),
+# just not for style.
+extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 select = [
@@ -107,7 +113,7 @@ show_error_codes = true
 files = ["src/recoup", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["testcontainers.*", "uuid_utils.*", "asyncpg.*"]
+module = ["testcontainers.*", "uuid_utils.*", "asyncpg.*", "scipy.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

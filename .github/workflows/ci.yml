@@ -46,6 +46,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -98,6 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -146,6 +150,8 @@ jobs:
         working-directory: services/core
 
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -154,7 +160,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: apps/console
       - name: pnpm audit
-        run: pnpm audit --audit-level=high
+        # `pnpm audit` hits npm's bulk advisories endpoint, which is
+        # occasionally slow to respond from CI runners; its own retry logic
+        # (2 retries, fixed 10s/60s backoff) is hardcoded and unaffected by
+        # .npmrc's fetch-retries. Wrap it in an outer retry loop so a
+        # registry blip doesn't fail the job -- this is a wider budget on
+        # top of pnpm's own, not a replacement for it.
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if pnpm audit --audit-level=high; then
+              exit 0
+            fi
+            echo "pnpm audit attempt $attempt/5 failed, retrying in 30s..."
+            sleep 30
+          done
+          echo "pnpm audit failed after 5 attempts"
+          exit 1
         working-directory: apps/console
 
   # --- Build ---------------------------------------------------------------

@@ -77,6 +77,27 @@ forbidden_modules =
     recoup.planning
 
 ; ---------------------------------------------------------------------------
+; RAZORPAY-INTEGRATION SS6.1: the simulator's ground truth is the answer
+; key. Only bench.evaluation may read it -- everything upstream must infer
+; the world from observable signals alone, or diagnosis accuracy would be
+; graded on information the diagnosis engine never actually had.
+[importlinter:contract:ground-truth-is-write-only]
+name = Ground truth is write-only outside bench.evaluation
+type = forbidden
+source_modules =
+    recoup.domain
+    recoup.policy
+    recoup.detection
+    recoup.diagnosis
+    recoup.planning
+    recoup.execution
+    recoup.attribution
+    recoup.audit
+    recoup.api
+forbidden_modules =
+    recoup.gateway.simulator.ground_truth
+
+; ---------------------------------------------------------------------------
 [importlinter:contract:layering]
 name = Dependencies point inward
 type = layers
