@@ -1,0 +1,36 @@
+# Version 1 of the insufficient-funds playbook (PHASE-02 T2.4). `id` stays
+# version-free (DOMAIN-MODEL SS6.1) so `applies_to` matching is stable
+# across future versions; the version lives only in `version:` and the
+# filename, for humans browsing the directory.
+id: insufficient-funds
+version: 1
+
+applies_to:
+  root_cause: insufficient_funds
+  leak_classes: [L1, L2, L3]
+
+cost_ceiling_pct: 4.0
+max_attempts: 3
+max_case_age_days: 21
+
+steps:
+  # A gateway-routed mandate/payment retry (T2.7) -- no messaging spend.
+  - id: retry
+    channel: payment_retry
+    timing:
+      policy: fixed
+      offset_hours: 6
+    expected_cost_paise: 0
+    consumes_mandate_budget: true
+    guard:
+      decline_retryable: true
+
+  # A Razorpay payment link, gateway-routed like the retry above -- free to
+  # generate, so also modelled at zero expected cost this phase.
+  - id: payment_link
+    channel: link
+    timing:
+      policy: relative
+      after_step: retry
+      offset_hours: 24
+    expected_cost_paise: 0
