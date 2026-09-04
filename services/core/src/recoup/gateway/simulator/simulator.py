@@ -127,6 +127,60 @@ class RazorpaySimulator:
             attempt_no=1,
         )
 
+    def seed_failed_payment(
+        self,
+        *,
+        customer_id: str,
+        amount: Money,
+        method: str,
+        issuer: str,
+        at: datetime,
+        decline_category: DeclineCategory,
+        order_id: str | None = None,
+    ) -> Payment:
+        """T3.5's benchmark harness only -- not part of `PaymentGateway`,
+        and deliberately not `seed_payment` (whose outcome `_execute_attempt`
+        always rolls via `World.attempt_outcome`). A benchmark cohort (T3.1)
+        pre-assigns each case's decline category from its own realistic
+        distribution -- an *at-risk* population by construction. Rolling the
+        initial attempt through `World` instead could just as easily land on
+        `success`, at each instrument's ~85-92% base rate, which would
+        silently evaporate most of a requested cohort before it ever became
+        a case. This forces the *initial* failure to match the cohort's own
+        assignment; every *retry* against it still rolls normally through
+        `World.attempt_outcome` inside `retry_payment`, so whether recovery
+        actually happens stays exactly as stochastic and realistic as ever.
+
+        Still recorded to `ground_truth`, `true_cause="cohort_seed"` --
+        distinguishable from a naturally-rolled failure, but present in the
+        same log `bench.evaluation` reads, with the same
+        `would_have_recovered_unaided` counterfactual computed the normal
+        way.
+        """
+        payment = Payment(
+            id=self._new_id("pay"),
+            order_id=order_id if order_id is not None else self._new_id("order"),
+            customer_id=customer_id,
+            amount=amount,
+            status=PaymentStatus.FAILED,
+            method=method,
+            issuer=issuer,
+            error_reason=decline_category.value,
+            created_at=at,
+        )
+        self._payments[payment.id] = payment
+        self._ground_truth.record(
+            GroundTruthRecord(
+                payment_id=payment.id,
+                customer_id=customer_id,
+                true_cause="cohort_seed",
+                decline_category=decline_category,
+                would_have_recovered_unaided=self._world.would_recover_unaided(customer_id),
+                occurred_at=at,
+            )
+        )
+        return payment
+
     # --- PaymentGateway: reads ------------------------------------------
 
     async def fetch_payment(self, payment_id: str) -> Payment:

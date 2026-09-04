@@ -133,7 +133,12 @@ def _context_json(signal: Signal) -> dict[str, str | None]:
 
 
 async def open_case_for_signal(
-    session: AsyncSession, clock: Clock, seed: int, signal: Signal
+    session: AsyncSession,
+    clock: Clock,
+    seed: int,
+    signal: Signal,
+    *,
+    bench_run_id: uuid.UUID | None = None,
 ) -> Case | None:
     """Persists the `Signal`, then opens a `Case` from it with an arm
     assigned before diagnosis ever runs (T2.2's ordering requirement).
@@ -181,6 +186,8 @@ async def open_case_for_signal(
         arm=arm.value,
         at_risk_paise=signal.at_risk.paise,
         cost_ceiling_paise=0,
+        bench_run_id=bench_run_id,
+        source_payment_id=signal.source_payment_id,
         opened_at=clock.now(),
     )
     session.add(case_row)
@@ -234,6 +241,7 @@ async def open_case_for_signal(
         opened_at=case_row.opened_at,
         cost_spent=Money(0, signal.at_risk.currency),
         cost_ceiling=Money(0, signal.at_risk.currency),
+        source_payment_id=signal.source_payment_id,
     )
 
 

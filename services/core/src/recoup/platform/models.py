@@ -254,6 +254,7 @@ class CaseRow(Base, _UpdatedAtMixin):
     bench_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("bench_runs.id", ondelete="RESTRICT")
     )
+    source_payment_id: Mapped[str | None]
     opened_at: Mapped[datetime]
     resolved_at: Mapped[datetime | None]
 
