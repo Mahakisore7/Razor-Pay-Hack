@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     )
     redis_url: str = Field(default="redis://localhost:6379/0")
 
+    # Threaded into `Case.assign_arm(seed, case_id)` (DOMAIN-MODEL SS4) for
+    # live traffic, outside a benchmark run -- Phase 3's `make bench
+    # SEED=n` passes its own seed explicitly instead of reading this.
+    arm_assignment_seed: int = Field(default=0)
+
     # Unset in Phase 0 -- introduced by later phases. Declared here as SecretStr
     # now, deliberately, so the masking behaviour below is established and
     # tested before a real credential ever exists to leak.

@@ -60,12 +60,21 @@ def extract_decline_reason(event_type: str, payload: dict[str, Any]) -> str | No
     """Pull Razorpay's raw `error_reason` out of a payment-shaped envelope
     (`payload.payment.entity.error_reason`, RAZORPAY-INTEGRATION SS5).
 
-    Only `payment.*` events carry one, and only failures actually populate
-    it -- a `payment.captured` envelope has the same shape with no error
-    fields, which the defensive `.get`/`isinstance` chain here treats the
-    same as "absent" rather than raising."""
-    if not event_type.startswith("payment."):
-        return None
+    Structural, not gated on `event_type`: a `payment.*` event carries this
+    shape, but so does `subscription.charged` when the underlying charge
+    attempt against a mandate fails (RAZORPAY-INTEGRATION SS4.1's L2
+    mapping) -- a charge attempt is still a `Payment` underneath. Only a
+    failure actually populates `error_reason`; a successful envelope has
+    the same shape with no error fields, which the defensive `.get`/
+    `isinstance` chain here treats the same as "absent" rather than
+    raising, for any event type that happens not to carry this shape at
+    all (`subscription.halted` has no nested payment entity, for one).
+
+    `event_type` stays a parameter even though it is now unused here --
+    every other function in this module's `(event_type, payload)` shape
+    is what callers already pass positionally, and dropping it here alone
+    would be a needless asymmetry for the one caller unaffected by it.
+    """
     payment = payload.get("payload")
     if not isinstance(payment, dict):
         return None
