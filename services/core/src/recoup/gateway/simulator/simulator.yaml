@@ -1,0 +1,103 @@
+# Every simulator parameter, published in the benchmark report (RAZORPAY-
+# INTEGRATION SS6, ADR-0004) so a reviewer can read exactly what world
+# produced the numbers. Nothing here is tuned to reproduce real-world
+# rates -- the ADR is explicit that only the *internal* comparison between
+# arms on this generator is ever claimed.
+
+instruments:
+  upi:
+    base_success_rate: 0.92
+    failure_mix:
+      insufficient_funds: 0.15
+      issuer_declined: 0.40
+      invalid_instrument: 0.20
+      risk_blocked: 0.15
+      authentication_failed: 0.10
+  card:
+    base_success_rate: 0.88
+    failure_mix:
+      insufficient_funds: 0.10
+      issuer_declined: 0.30
+      expired_instrument: 0.20
+      invalid_instrument: 0.15
+      limit_exceeded: 0.15
+      authentication_failed: 0.10
+  netbanking:
+    base_success_rate: 0.85
+    failure_mix:
+      insufficient_funds: 0.20
+      issuer_declined: 0.40
+      network_timeout: 0.20
+      authentication_failed: 0.20
+  wallet:
+    base_success_rate: 0.90
+    failure_mix:
+      insufficient_funds: 0.10
+      issuer_declined: 0.30
+      invalid_instrument: 0.30
+      risk_blocked: 0.30
+
+issuer_outages:
+  daily_start_probability: 0.03
+  duration_hours_min: 2.0
+  duration_hours_max: 18.0
+  severity: 0.10 # success-rate multiplier applied to that issuer while an outage lasts
+
+salary_cycle:
+  pre_payday_days: [25, 26, 27, 28, 29, 30, 31, 1]
+  insufficient_funds_uplift: 3.0 # multiplier on the baseline insufficient_funds weight
+
+# 24 hourly success-rate multipliers, index = hour of day (UTC). Lower
+# overnight, peaking mid-morning and again in the evening.
+diurnal:
+  hourly_multiplier:
+    [
+      0.70,
+      0.68,
+      0.66,
+      0.65,
+      0.66,
+      0.70,
+      0.78,
+      0.88,
+      0.95,
+      0.98,
+      0.99,
+      0.98,
+      0.95,
+      0.93,
+      0.92,
+      0.93,
+      0.95,
+      0.97,
+      0.98,
+      0.96,
+      0.90,
+      0.85,
+      0.80,
+      0.74,
+    ]
+
+mandate_budgets:
+  default_representation_cap: 3
+
+# Latent per-customer willingness to pay, sampled once per customer from
+# Beta(alpha, beta) -- this shape skews toward "will eventually pay
+# anyway," which is exactly why the control arm exists (DOMAIN-MODEL SS3).
+customer_propensity:
+  alpha: 2.0
+  beta: 3.0
+
+intervention_response:
+  click_through_rate:
+    sms: 0.35
+    whatsapp: 0.45
+    email: 0.15
+    voice: 0.20
+    payment_retry: 1.0 # not a customer action -- always "delivered"
+    link: 0.30
+    human_review: 1.0
+  conversion_given_click: 0.60 # baseline; scaled by customer propensity
+
+network_faults:
+  base_rate: 0.02
