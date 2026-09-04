@@ -423,6 +423,12 @@ class ScheduledActionRow(Base, _CreatedAtMixin):
     claim_expires_at: Mapped[datetime | None]
     attempts: Mapped[int] = mapped_column(server_default=text("0"))
     last_error: Mapped[str | None]
+    # Set only by `mark_done` (T2.8): the anchor attribution's 72-hour
+    # window is measured from (METRICS-AND-KPIS SS6, TR-30) -- `done` is
+    # the outbox status shared by a real execution and a suppressed
+    # duplicate (whose original run already set this), so it is exactly
+    # "this action's side effect has run" with no separate flag needed.
+    executed_at: Mapped[datetime | None]
 
     __table_args__ = (
         CheckConstraint(

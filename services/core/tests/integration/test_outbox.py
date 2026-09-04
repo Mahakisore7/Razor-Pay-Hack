@@ -300,11 +300,12 @@ async def test_mark_done_transitions_a_claimed_row_to_done(engine: AsyncEngine) 
         await claim_due_batch(session, _CLOCK, worker_id="worker-1", batch_size=10)
 
     async with sessionmaker() as session:
-        updated = await mark_done(session, scheduled_id)
+        updated = await mark_done(session, _CLOCK, scheduled_id)
 
     assert updated is True
     row = await _fetch(sessionmaker, scheduled_id)
     assert row.status == "done"
+    assert row.executed_at == _CLOCK.now()
 
 
 async def test_mark_done_returns_false_when_the_row_is_not_claimed(engine: AsyncEngine) -> None:
@@ -318,11 +319,12 @@ async def test_mark_done_returns_false_when_the_row_is_not_claimed(engine: Async
     # never claimed -- still "pending"
 
     async with sessionmaker() as session:
-        updated = await mark_done(session, scheduled_id)
+        updated = await mark_done(session, _CLOCK, scheduled_id)
 
     assert updated is False
     row = await _fetch(sessionmaker, scheduled_id)
     assert row.status == "pending"
+    assert row.executed_at is None
 
 
 async def test_mark_failed_records_the_error_and_transitions_to_failed(engine: AsyncEngine) -> None:

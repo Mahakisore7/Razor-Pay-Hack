@@ -18,7 +18,7 @@ claimed batch to a channel and reports back with `mark_done`/`mark_failed`.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
@@ -103,12 +103,19 @@ async def reclaim_expired_claims(session: AsyncSession, clock: Clock) -> int:
     return cast("CursorResult[Any]", result).rowcount
 
 
-async def mark_done(session: AsyncSession, scheduled_action_id: UUID) -> bool:
+async def mark_done(session: AsyncSession, clock: Clock, scheduled_action_id: UUID) -> bool:
     """Only transitions a row that is still `claimed` -- if its TTL
     already expired and another worker reclaimed it in the meantime, this
     returns `False` rather than overwriting whatever that worker is now
-    doing with it."""
-    return await _complete(session, scheduled_action_id, status="done")
+    doing with it.
+
+    `clock.now()` becomes `executed_at` -- attribution's 72-hour window
+    (T2.8, METRICS-AND-KPIS SS6) anchors to it, so it is captured here,
+    the one place a scheduled action actually completes, rather than
+    reconstructed later from `due_at` (the *planned* time, not the
+    actual one).
+    """
+    return await _complete(session, scheduled_action_id, status="done", executed_at=clock.now())
 
 
 async def mark_failed(session: AsyncSession, scheduled_action_id: UUID, *, error: str) -> bool:
@@ -116,7 +123,12 @@ async def mark_failed(session: AsyncSession, scheduled_action_id: UUID, *, error
 
 
 async def _complete(
-    session: AsyncSession, scheduled_action_id: UUID, *, status: str, last_error: str | None = None
+    session: AsyncSession,
+    scheduled_action_id: UUID,
+    *,
+    status: str,
+    last_error: str | None = None,
+    executed_at: datetime | None = None,
 ) -> bool:
     stmt = (
         update(ScheduledActionRow)
@@ -124,7 +136,7 @@ async def _complete(
             ScheduledActionRow.id == scheduled_action_id,
             ScheduledActionRow.status == "claimed",
         )
-        .values(status=status, last_error=last_error)
+        .values(status=status, last_error=last_error, executed_at=executed_at)
         .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)

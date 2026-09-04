@@ -125,7 +125,7 @@ async def execute(
     key = idempotency_key(action)
     acquired = await redis.set(key, "1", nx=True, ex=int(_IDEMPOTENCY_TTL.total_seconds()))
     if not acquired:
-        await mark_done(session, scheduled_action_id)
+        await mark_done(session, clock, scheduled_action_id)
         return ExecutionResult(status=ExecutionStatus.SUPPRESSED, channel_success=None)
 
     if dry_run:
@@ -146,6 +146,6 @@ async def execute(
         .where(CaseRow.id == case.id)
         .values(cost_spent_paise=CaseRow.cost_spent_paise + action.cost.paise)
     )
-    await mark_done(session, scheduled_action_id)
+    await mark_done(session, clock, scheduled_action_id)
     await session.commit()
     return ExecutionResult(status=ExecutionStatus.EXECUTED, channel_success=result.success)
