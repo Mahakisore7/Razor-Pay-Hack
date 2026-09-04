@@ -2,9 +2,12 @@
 not in it raises `IllegalTransition` rather than silently moving the case.
 """
 
+from collections import Counter
+
 import pytest
 
 from recoup.domain.case import (
+    DEFAULT_ARM_WEIGHTS,
     TERMINAL_STATES,
     Arm,
     CaseState,
@@ -116,3 +119,18 @@ def test_assign_arm_can_differ_across_cases() -> None:
     seed = 42
     arms = {assign_arm(seed, CaseId(uuid7())) for _ in range(200)}
     assert arms == set(Arm)  # 200 draws should hit all three arms at least once
+
+
+def test_assign_arm_matches_the_default_10_10_80_split_within_tolerance() -> None:
+    seed = 7
+    counts = Counter(assign_arm(seed, CaseId(uuid7())) for _ in range(6000))
+    for arm, expected_weight in DEFAULT_ARM_WEIGHTS.items():
+        observed = counts[arm] / 6000
+        assert abs(observed - expected_weight) < 0.02, (arm, observed, expected_weight)
+
+
+def test_assign_arm_honours_a_custom_weights_override() -> None:
+    seed = 3
+    weights = {Arm.CONTROL: 1.0, Arm.BASELINE: 0.0, Arm.TREATMENT: 0.0}
+    arms = {assign_arm(seed, CaseId(uuid7()), weights=weights) for _ in range(50)}
+    assert arms == {Arm.CONTROL}
