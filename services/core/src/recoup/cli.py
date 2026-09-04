@@ -6,6 +6,7 @@ Phase 2, `bench run` in Phase 3. Phase 0 ships the entry point itself and a
 """
 
 import time
+import uuid
 from pathlib import Path
 
 import typer
@@ -14,6 +15,8 @@ import uvicorn
 app = typer.Typer(
     name="recoup", help="Recoup -- revenue recovery control plane.", no_args_is_help=True
 )
+audit_app = typer.Typer(name="audit", help="Audit chain tools.", no_args_is_help=True)
+app.add_typer(audit_app, name="audit")
 
 
 @app.command()
@@ -141,6 +144,78 @@ async def _import_events(lines: list[str]) -> None:
         await engine.dispose()
 
     typer.echo(f"imported {inserted}, skipped {duplicates} duplicate(s), {flagged} unparseable")
+
+
+@audit_app.command("verify")
+def audit_verify(
+    case: str = typer.Option(..., "--case", help="Case id (UUID) to verify."),
+) -> None:
+    """Recompute a case's audit chain and report the first divergence, if
+    any (DOMAIN-MODEL SS10). Exits non-zero on a diverged or empty chain,
+    so this is safe to run from a script that needs to know.
+    """
+    import asyncio
+
+    try:
+        case_id = uuid.UUID(case)
+    except ValueError as exc:
+        typer.echo(f"'{case}' is not a valid case id: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    asyncio.run(_audit_verify(case_id))
+
+
+async def _audit_verify(case_id: uuid.UUID) -> None:
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from recoup.audit.events import Actor, ActorKind, AuditEvent, AuditKind
+    from recoup.audit.verify import verify_chain
+    from recoup.domain.identifiers import AuditEventId, CaseId
+    from recoup.platform.config import get_settings
+    from recoup.platform.models import AuditEventRow
+
+    settings = get_settings()
+    # A dedicated, disposed-on-exit engine -- see `_import_events` above
+    # for why a one-shot command builds its own rather than reusing the
+    # process-wide singleton `platform.db.get_sessionmaker` hands a
+    # long-running server.
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            result = await session.execute(
+                select(AuditEventRow)
+                .where(AuditEventRow.case_id == case_id)
+                .order_by(AuditEventRow.seq)
+            )
+            rows = result.scalars().all()
+    finally:
+        await engine.dispose()
+
+    if not rows:
+        typer.echo(f"case {case_id}: no audit events found")
+        raise typer.Exit(code=1)
+
+    events = [
+        AuditEvent(
+            id=AuditEventId(row.id),
+            case_id=CaseId(row.case_id),
+            seq=row.seq,
+            kind=AuditKind(row.kind),
+            payload=row.payload,
+            actor=Actor(ActorKind(row.actor_type), row.actor_id),
+            trace_id=row.trace_id,
+            occurred_at=row.occurred_at,
+            prev_hash=row.prev_hash,
+        )
+        for row in rows
+    ]
+
+    divergence = verify_chain(events)
+    if divergence is not None:
+        typer.echo(f"case {case_id}: chain diverges at seq {divergence}")
+        raise typer.Exit(code=1)
+    typer.echo(f"case {case_id}: chain intact, {len(events)} event(s)")
 
 
 def _run_placeholder_process(name: str, poll_interval: float) -> None:

@@ -33,7 +33,13 @@ from recoup.execution.executor import (
 from recoup.gateway.interface import Payment, PaymentQuery, PaymentStatus
 from recoup.gateway.simulator.simulator import RazorpaySimulator
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import ActionRow, CaseRow, PolicyDecisionRow, ScheduledActionRow
+from recoup.platform.models import (
+    ActionRow,
+    AuditEventRow,
+    CaseRow,
+    PolicyDecisionRow,
+    ScheduledActionRow,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -216,6 +222,18 @@ async def _scheduled_row(
         return row
 
 
+async def _audit_rows(
+    sessionmaker: async_sessionmaker[AsyncSession], case_id: uuid.UUID
+) -> list[AuditEventRow]:
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(AuditEventRow)
+            .where(AuditEventRow.case_id == case_id)
+            .order_by(AuditEventRow.seq)
+        )
+        return list(result.scalars().all())
+
+
 # --- A2.3: no ALLOW, no execution ------------------------------------------------
 
 
@@ -307,6 +325,19 @@ async def test_execute_calls_the_channel_records_cost_and_marks_done(
     assert scheduled.status == "done"
 
     assert await redis_client.exists(idempotency_key(action)) == 1
+
+    # I4 (T2.9): seq 1-3 are case creation's own chain (`_seed` calls
+    # `open_case_for_signal`); the execution itself is seq 4.
+    audit = await _audit_rows(sessionmaker, case.id)
+    assert [row.kind for row in audit] == [
+        "signal_detected",
+        "case_opened",
+        "arm_assigned",
+        "action_executed",
+    ]
+    assert audit[3].prev_hash == audit[2].hash
+    assert audit[3].payload["channel"] == "payment_retry"
+    assert audit[3].payload["dry_run"] is False
 
 
 async def test_execute_calls_the_link_channel(engine: AsyncEngine, redis_client: Redis) -> None:
@@ -410,6 +441,11 @@ async def test_execute_suppresses_a_duplicate_call_with_the_same_idempotency_key
     row = await _case_row(sessionmaker, case.id)
     assert row.cost_spent_paise == action.cost.paise  # not double-counted
 
+    # The suppressed replay wrote no second `action_executed` -- the
+    # channel did not run again, so there is nothing new to record.
+    audit = await _audit_rows(sessionmaker, case.id)
+    assert [row.kind for row in audit].count("action_executed") == 1
+
 
 # --- crash mid-action: reclaimed, still not duplicated ----------------------------
 
@@ -505,6 +541,11 @@ async def test_a_channel_exception_marks_the_action_failed_without_adding_cost(
     scheduled = await _scheduled_row(sessionmaker, scheduled_id)
     assert scheduled.status == "failed"
     assert scheduled.last_error is not None and "payment_id" in scheduled.last_error
+
+    audit = await _audit_rows(sessionmaker, case.id)
+    assert audit[3].kind == "action_failed"
+    error = audit[3].payload["error"]
+    assert isinstance(error, str) and "payment_id" in error
 
 
 # --- dry-run: every stage except the channel call ---------------------------------

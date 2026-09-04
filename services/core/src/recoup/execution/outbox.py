@@ -25,8 +25,12 @@ from uuid import UUID
 from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recoup.audit.events import Actor, AuditKind
+from recoup.audit.repository import record_event
+from recoup.domain.identifiers import CaseId
 from recoup.platform.clock import Clock
-from recoup.platform.models import ScheduledActionRow
+from recoup.platform.logging import current_trace_id
+from recoup.platform.models import ActionRow, ScheduledActionRow
 
 __all__ = [
     "DEFAULT_CLAIM_TTL",
@@ -79,8 +83,51 @@ async def claim_due_batch(
     )
     result = await session.execute(stmt)
     claimed = sorted(result.scalars().all(), key=lambda row: row.due_at)
+    await _record_claims(session, clock, claimed, worker_id=worker_id)
     await session.commit()
     return claimed
+
+
+async def _record_claims(
+    session: AsyncSession, clock: Clock, claimed: list[ScheduledActionRow], *, worker_id: str
+) -> None:
+    """I4: one `action_claimed` per row, in the same transaction the
+    claim itself just landed in. A batch can span many cases, so the
+    corresponding `actions` rows (for `channel`/`step_id` on the payload)
+    are fetched once for the whole batch rather than one query per row.
+
+    Each `record_event` call locks that case's audit chain tail
+    (`recoup.audit.repository`), and two concurrent batches can share a
+    case when its due actions land in different workers' claims. Writing
+    in `case_id` order -- not `claimed`'s own `due_at` order -- keeps
+    every worker acquiring those locks in the same relative order, which
+    is what rules out a lock-cycle deadlock between them.
+    """
+    if not claimed:
+        return
+    action_rows = await session.execute(
+        select(ActionRow).where(ActionRow.id.in_([row.action_id for row in claimed]))
+    )
+    actions_by_id = {row.id: row for row in action_rows.scalars()}
+    trace_id = current_trace_id()
+    now = clock.now()
+    for row in sorted(claimed, key=lambda r: str(r.case_id)):
+        action = actions_by_id[row.action_id]
+        await record_event(
+            session,
+            case_id=CaseId(row.case_id),
+            kind=AuditKind.ACTION_CLAIMED,
+            payload={
+                "action_id": str(row.action_id),
+                "channel": action.channel,
+                "step_id": action.step_id,
+                "attempt": row.attempts,
+                "worker_id": worker_id,
+            },
+            actor=Actor.scheduler(),
+            trace_id=trace_id,
+            occurred_at=now,
+        )
 
 
 async def reclaim_expired_claims(session: AsyncSession, clock: Clock) -> int:

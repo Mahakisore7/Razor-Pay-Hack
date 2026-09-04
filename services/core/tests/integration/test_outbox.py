@@ -27,7 +27,7 @@ from recoup.domain.money import Currency, Money
 from recoup.domain.signal import LeakClass, Signal, SignalContext
 from recoup.execution.outbox import claim_due_batch, mark_done, mark_failed, reclaim_expired_claims
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import ActionRow, ScheduledActionRow
+from recoup.platform.models import ActionRow, AuditEventRow, ScheduledActionRow
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -112,6 +112,16 @@ async def _fetch(sessionmaker: SessionmakerT, scheduled_id: uuid.UUID) -> Schedu
         return row
 
 
+async def _audit_rows(sessionmaker: SessionmakerT, case_id: CaseId) -> list[AuditEventRow]:
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(AuditEventRow)
+            .where(AuditEventRow.case_id == case_id)
+            .order_by(AuditEventRow.seq)
+        )
+        return list(result.scalars().all())
+
+
 # --- claim_due_batch -------------------------------------------------------------
 
 
@@ -131,6 +141,31 @@ async def test_claim_due_batch_claims_a_due_pending_row(engine: AsyncEngine) -> 
     assert claimed[0].claimed_at == _CLOCK.now()
     assert claimed[0].claim_expires_at == _CLOCK.now() + timedelta(minutes=5)
     assert claimed[0].attempts == 1
+
+    # I4 (T2.9): seq 1-3 are case creation's own chain; the claim is seq 4.
+    audit = await _audit_rows(sessionmaker, case_id)
+    assert [row.kind for row in audit][-1] == "action_claimed"
+    assert audit[-1].payload["worker_id"] == "worker-1"
+    assert audit[-1].payload["attempt"] == 1
+
+
+async def test_claim_due_batch_writes_one_action_claimed_event_per_case_in_the_batch(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_a = await _seed_case(sessionmaker, "cust_claim_audit_a")
+    case_b = await _seed_case(sessionmaker, "cust_claim_audit_b")
+    await _seed_scheduled_actions(sessionmaker, case_a, count=2, due_at=_CLOCK.now())
+    await _seed_scheduled_actions(sessionmaker, case_b, count=1, due_at=_CLOCK.now())
+
+    async with sessionmaker() as session:
+        claimed = await claim_due_batch(session, _CLOCK, worker_id="worker-1", batch_size=10)
+    assert len(claimed) == 3
+
+    audit_a = await _audit_rows(sessionmaker, case_a)
+    audit_b = await _audit_rows(sessionmaker, case_b)
+    assert [row.kind for row in audit_a].count("action_claimed") == 2
+    assert [row.kind for row in audit_b].count("action_claimed") == 1
 
 
 async def test_claim_due_batch_ignores_rows_not_yet_due(engine: AsyncEngine) -> None:

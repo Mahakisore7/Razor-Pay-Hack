@@ -9,20 +9,16 @@ before the matcher ever runs again, so replaying the same payment (a
 retried caller, a re-delivered event once T2.10 wires a trigger to this
 function) can never move it to a second case.
 
-Two things this module deliberately does not do, both scoped to other
-PRs already on the books:
+This module does not assign `LOST` or `EXPIRED`. Both are stopping-rule
+outcomes (`max_attempts_reached`, `max_case_age`) owned by the policy
+engine's R2 (POLICY-ENGINE SS3, PHASE-04 T4.2), not attribution -- this
+module only ever writes `RECOVERED` or `PARTIALLY_RECOVERED`, the two
+kinds `Outcome` itself allows without a `reason_code`.
 
-- Emit `audit_events` for `payment_attributed` / `attribution_ambiguous`.
-  T2.9 ("audit wiring") is the PR that wires `recoup.audit.append_event`
-  into every module's write path; T2.5's policy engine shipped the same
-  way -- decisions persisted, audit chain not yet touched. Contention is
-  still fully reported here, via `AttributionResult.ambiguous_case_ids`,
-  for whatever calls this until T2.9 lands.
-- Assign `LOST` or `EXPIRED`. Both are stopping-rule outcomes
-  (`max_attempts_reached`, `max_case_age`) owned by the policy engine's
-  R2 (POLICY-ENGINE SS3, PHASE-04 T4.2), not attribution -- this module
-  only ever writes `RECOVERED` or `PARTIALLY_RECOVERED`, the two kinds
-  `Outcome` itself allows without a `reason_code`.
+I4 (T2.9): the winning case gets `payment_attributed` (why) then
+`case_resolved` (the state transition itself), and each losing case in a
+contended match gets its own `attribution_ambiguous` -- on its own
+chain, since that case's state does not change.
 """
 
 from __future__ import annotations
@@ -37,6 +33,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoup.attribution.matcher import CaseCandidate, PaymentInfo, match_payment
+from recoup.audit.events import Actor, AuditKind
+from recoup.audit.repository import record_event
 from recoup.domain.case import Arm, Case, CaseState
 from recoup.domain.identifiers import CaseId, CustomerRef, SignalId
 from recoup.domain.money import Currency, Money
@@ -44,6 +42,7 @@ from recoup.domain.outcome import OutcomeKind
 from recoup.gateway.interface import Payment as GatewayPayment
 from recoup.gateway.interface import PaymentStatus
 from recoup.platform.clock import Clock
+from recoup.platform.logging import current_trace_id
 from recoup.platform.models import ActionRow, CaseRow, Customer, OutcomeRow, ScheduledActionRow
 from recoup.platform.models import Payment as PaymentRow
 
@@ -101,10 +100,50 @@ async def attribute_payment(
         payment_id=payment.id,
         step_id=result.step_id,
     )
+    if result.ambiguous_with:
+        await _record_ambiguity(
+            session,
+            clock,
+            payment_id=payment.id,
+            winner=result.winner,
+            losers=result.ambiguous_with,
+        )
     await session.commit()
     return AttributionResult(
         matched_case_id=result.winner, ambiguous_case_ids=result.ambiguous_with
     )
+
+
+async def _record_ambiguity(
+    session: AsyncSession,
+    clock: Clock,
+    *,
+    payment_id: str,
+    winner: CaseId,
+    losers: tuple[CaseId, ...],
+) -> None:
+    """`_resolve_case` (the winner) always runs before this (the
+    losers), and `match_payment`'s contention rule (TR-29) always picks
+    the *same* older case as winner for a given set of candidate cases,
+    regardless of which payment or which caller triggers the match -- so
+    two concurrent calls that touch an overlapping set of cases always
+    lock winner-then-loser in the same order too, `recoup.audit.
+    repository`'s per-case chain-tail lock included. That is what rules
+    out a deadlock here without needing an explicit sort, unlike the
+    outbox's multi-case batch claim.
+    """
+    trace_id = current_trace_id()
+    now = clock.now()
+    for loser_id in losers:
+        await record_event(
+            session,
+            case_id=loser_id,
+            kind=AuditKind.ATTRIBUTION_AMBIGUOUS,
+            payload={"payment_id": payment_id, "winning_case_id": str(winner)},
+            actor=Actor.system(),
+            trace_id=trace_id,
+            occurred_at=now,
+        )
 
 
 async def _load_candidates(session: AsyncSession, razorpay_customer_id: str) -> list[CaseCandidate]:
@@ -239,6 +278,30 @@ async def _resolve_case(
     now = clock.now()
     row.state = case.state.value
     row.resolved_at = now
+    trace_id = current_trace_id()
+    await record_event(
+        session,
+        case_id=case_id,
+        kind=AuditKind.PAYMENT_ATTRIBUTED,
+        payload={
+            "payment_id": payment_id,
+            "kind": kind.value,
+            "recovered_paise": recovered.paise,
+            "step_id": step_id,
+        },
+        actor=Actor.system(),
+        trace_id=trace_id,
+        occurred_at=now,
+    )
+    await record_event(
+        session,
+        case_id=case_id,
+        kind=AuditKind.CASE_RESOLVED,
+        payload={"kind": kind.value, "recovered_paise": recovered.paise},
+        actor=Actor.system(),
+        trace_id=trace_id,
+        occurred_at=now,
+    )
     session.add(
         OutcomeRow(
             id=uuid.uuid4(),

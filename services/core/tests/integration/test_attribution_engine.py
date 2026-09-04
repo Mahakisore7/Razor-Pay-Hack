@@ -27,6 +27,7 @@ from recoup.gateway.interface import PaymentStatus
 from recoup.platform.clock import FrozenClock
 from recoup.platform.models import (
     ActionRow,
+    AuditEventRow,
     CaseRow,
     OutcomeRow,
     ScheduledActionRow,
@@ -186,6 +187,18 @@ async def _outcome_count(sessionmaker: async_sessionmaker[AsyncSession], case_id
         return len(result.scalars().all())
 
 
+async def _audit_rows(
+    sessionmaker: async_sessionmaker[AsyncSession], case_id: uuid.UUID
+) -> list[AuditEventRow]:
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(AuditEventRow)
+            .where(AuditEventRow.case_id == case_id)
+            .order_by(AuditEventRow.seq)
+        )
+        return list(result.scalars().all())
+
+
 # --- ignored inputs ------------------------------------------------------------------
 
 
@@ -245,6 +258,12 @@ async def test_a_holdout_case_matches_within_its_creation_anchored_window(
     assert row.state == CaseState.RECOVERED.value
     assert row.resolved_at is not None
     assert await _outcome_count(sessionmaker, case_id) == 1
+
+    # I4 (T2.9): the winner gets `payment_attributed` then `case_resolved`,
+    # after case creation's own three-event chain.
+    audit = await _audit_rows(sessionmaker, case_id)
+    assert [row.kind for row in audit][-2:] == ["payment_attributed", "case_resolved"]
+    assert audit[-1].payload["kind"] == "recovered"
 
 
 async def test_a_holdout_case_does_not_match_outside_its_creation_anchored_window(
@@ -425,6 +444,15 @@ async def test_contention_resolves_to_the_older_case_and_reports_the_younger(
     younger_row = await _case_row(sessionmaker, younger_id)
     assert older_row.state == CaseState.RECOVERED.value
     assert younger_row.state == CaseState.HOLDOUT.value  # untouched -- never attributed to both
+
+    # I4 (T2.9): the winner's own chain, plus the loser's own
+    # `attribution_ambiguous` on ITS chain -- the loser's state never
+    # changed, so it gets no `case_resolved`.
+    older_audit = await _audit_rows(sessionmaker, older_id)
+    younger_audit = await _audit_rows(sessionmaker, younger_id)
+    assert [row.kind for row in older_audit][-2:] == ["payment_attributed", "case_resolved"]
+    assert [row.kind for row in younger_audit][-1] == "attribution_ambiguous"
+    assert younger_audit[-1].payload["winning_case_id"] == str(older_id)
 
 
 # --- idempotency and never-twice ---------------------------------------------------------

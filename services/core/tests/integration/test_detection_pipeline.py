@@ -24,7 +24,7 @@ from recoup.domain.money import Currency, Money
 from recoup.domain.signal import LeakClass, Signal, SignalContext
 from recoup.gateway.ingestion import RAZORPAY_SOURCE, store_raw_event
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import CaseRow, RawEvent
+from recoup.platform.models import AuditEventRow, CaseRow, RawEvent
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -135,6 +135,60 @@ async def test_open_case_for_signal_creates_a_detected_case(engine: AsyncEngine)
     assert case.at_risk.paise == 321_000
     assert case.cost_spent.paise == 0
     assert case.cost_ceiling.paise == 0
+
+
+async def test_open_case_for_signal_writes_a_three_event_audit_chain(engine: AsyncEngine) -> None:
+    """I4 (T2.9): case creation is three transitions -- the signal, the
+    case, and its arm -- and each writes exactly one event, gapless and
+    hash-chained, in the same transaction as the rows they describe."""
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_open_case_audit")
+        signal = _signal(customer, at_risk_paise=444_000, source_event_id="evt-open-case-audit")
+        case = await open_case_for_signal(session, _CLOCK, seed=1, signal=signal)
+    assert case is not None
+
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(AuditEventRow)
+            .where(AuditEventRow.case_id == case.id)
+            .order_by(AuditEventRow.seq)
+        )
+        rows = result.scalars().all()
+
+    assert [row.kind for row in rows] == ["signal_detected", "case_opened", "arm_assigned"]
+    assert [row.seq for row in rows] == [1, 2, 3]
+    assert rows[0].prev_hash == ""
+    assert rows[1].prev_hash == rows[0].hash
+    assert rows[2].prev_hash == rows[1].hash
+    assert {row.trace_id for row in rows} == {rows[0].trace_id}  # one trace for the whole creation
+
+
+async def test_a_dedup_no_op_writes_no_audit_event(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as first_session:
+        customer = await resolve_customer(first_session, "cust_dedup_no_audit")
+        first_signal = _signal(customer, at_risk_paise=333_000, source_event_id="evt-dedup-audit-1")
+        first_case = await open_case_for_signal(first_session, _CLOCK, seed=7, signal=first_signal)
+    assert first_case is not None
+
+    async with sessionmaker() as second_session:
+        customer = await resolve_customer(second_session, "cust_dedup_no_audit")
+        second_signal = _signal(
+            customer, at_risk_paise=333_000, source_event_id="evt-dedup-audit-2"
+        )
+        second_case = await open_case_for_signal(
+            second_session, _CLOCK, seed=7, signal=second_signal
+        )
+    assert second_case is None
+
+    async with sessionmaker() as session:
+        result = await session.execute(
+            select(AuditEventRow).where(AuditEventRow.case_id == first_case.id)
+        )
+        # Exactly the first case's own three events -- the rejected second
+        # attempt created and rolled back nothing to have events at all.
+        assert len(result.scalars().all()) == 3
 
 
 async def test_open_case_for_signal_dedups_against_an_open_case_at_the_same_amount(

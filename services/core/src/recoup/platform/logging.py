@@ -10,6 +10,8 @@ a defence.
 
 import logging
 import re
+import secrets
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -34,6 +36,31 @@ def _redact_pii_keys(_logger: Any, _method_name: str, event_dict: EventDict) -> 
         if _PII_KEY_PATTERN.search(key):
             event_dict[key] = _REDACTED
     return event_dict
+
+
+def redact_pii(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The same key-pattern redaction `_redact_pii_keys` applies to log
+    lines (TR-73/74), reused for any other durable payload that might
+    carry a PII-keyed field -- an audit event's payload (T2.9,
+    DOMAIN-MODEL SS10), currently.
+    """
+    return {
+        key: (_REDACTED if _PII_KEY_PATTERN.search(key) else value)
+        for key, value in payload.items()
+    }
+
+
+def current_trace_id() -> str:
+    """The active OpenTelemetry trace id, or a freshly generated one if
+    no span is active. Unlike a log line -- which simply omits the field
+    when `_add_trace_context` finds no valid span -- an audit event's
+    `trace_id` column is `NOT NULL` (DOMAIN-MODEL SS10), so this always
+    returns something rather than leaving the caller to invent one.
+    """
+    ctx = trace.get_current_span().get_span_context()
+    if ctx.is_valid:
+        return format(ctx.trace_id, "032x")
+    return secrets.token_hex(16)
 
 
 def configure_logging(log_level: str = "INFO") -> None:
