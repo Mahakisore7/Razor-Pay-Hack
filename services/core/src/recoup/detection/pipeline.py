@@ -19,6 +19,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recoup.audit.events import Actor, AuditKind
+from recoup.audit.repository import record_event
 from recoup.detection.detectors import l1_failed_payment, l2_failed_mandate_debit
 from recoup.detection.detectors import l3_halted_subscription as l3_detector
 from recoup.detection.detectors.base import Detector
@@ -29,6 +31,7 @@ from recoup.domain.identifiers import CaseId, CustomerRef, SignalId, uuid7
 from recoup.domain.money import Money
 from recoup.domain.signal import Signal
 from recoup.platform.clock import Clock
+from recoup.platform.logging import current_trace_id
 from recoup.platform.models import CaseRow, Customer, RawEvent, SignalRow
 
 __all__ = [
@@ -149,8 +152,10 @@ async def open_case_for_signal(
     is what actually funds it. `cost_spent <= cost_ceiling` (I2) still
     holds trivially at 0 <= 0.
 
-    Audit wiring (I4: every state transition writes exactly one audit
-    event) is deliberately not here -- that is T2.9's scope, its own PR.
+    I4 (T2.9): the dedup no-op path writes no audit event -- nothing was
+    created, so there is nothing to have a chain. A real case gets three,
+    `signal_detected` / `case_opened` / `arm_assigned`, sharing one
+    `trace_id` and committed in the same transaction as the rows above.
     """
     customer_id = uuid.UUID(signal.customer.id)
     signal_row = SignalRow(
@@ -184,6 +189,39 @@ async def open_case_for_signal(
     except IntegrityError:
         await session.rollback()
         return None
+
+    trace_id = current_trace_id()
+    await record_event(
+        session,
+        case_id=case_id,
+        kind=AuditKind.SIGNAL_DETECTED,
+        payload={
+            "leak_class": signal.leak_class.value,
+            "at_risk_paise": signal.at_risk.paise,
+            "decline_category": signal.decline.name if signal.decline is not None else None,
+        },
+        actor=Actor.system(),
+        trace_id=trace_id,
+        occurred_at=clock.now(),
+    )
+    await record_event(
+        session,
+        case_id=case_id,
+        kind=AuditKind.CASE_OPENED,
+        payload={"signal_id": str(signal_row.id), "at_risk_paise": signal.at_risk.paise},
+        actor=Actor.system(),
+        trace_id=trace_id,
+        occurred_at=clock.now(),
+    )
+    await record_event(
+        session,
+        case_id=case_id,
+        kind=AuditKind.ARM_ASSIGNED,
+        payload={"arm": arm.value, "seed": seed},
+        actor=Actor.system(),
+        trace_id=trace_id,
+        occurred_at=clock.now(),
+    )
 
     await session.commit()
     return Case(

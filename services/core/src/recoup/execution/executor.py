@@ -23,6 +23,10 @@ correctly refuses to re-run the channel. Recording cost is bookkeeping;
 never double-charging or double-sending is the safety property this
 module exists for, and the two are not both achievable across an
 arbitrary crash point without a heavier protocol than TR-23 asks for.
+
+I4 (T2.9): a suppressed duplicate writes no `action_executed` -- the
+channel did not run again, so there is no new execution to record; the
+original run already accounted for it.
 """
 
 from __future__ import annotations
@@ -36,6 +40,8 @@ from redis.asyncio import Redis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from recoup.audit.events import Actor, AuditKind
+from recoup.audit.repository import record_event
 from recoup.domain.action import Action
 from recoup.domain.case import Case
 from recoup.domain.errors import RecoupError
@@ -45,6 +51,7 @@ from recoup.execution.channels.registry import get_channel_handler
 from recoup.execution.outbox import mark_done, mark_failed
 from recoup.gateway.interface import PaymentGateway
 from recoup.platform.clock import Clock
+from recoup.platform.logging import current_trace_id
 from recoup.platform.models import CaseRow, PolicyDecisionRow
 
 __all__ = [
@@ -135,12 +142,49 @@ async def execute(
         try:
             result = await handler(gateway, action, case, clock)
         except Exception as exc:
+            # I4: the audit event and `mark_failed`'s status write share
+            # this session, and `mark_failed` is what actually commits --
+            # so the two land together or, on a crash between them, not
+            # at all.
+            await record_event(
+                session,
+                case_id=case.id,
+                kind=AuditKind.ACTION_FAILED,
+                payload={
+                    "action_id": str(action.id),
+                    "channel": action.channel.value,
+                    "step_id": action.step_id,
+                    "attempt": action.attempt,
+                    "error": str(exc),
+                },
+                actor=Actor.scheduler(),
+                trace_id=current_trace_id(),
+                occurred_at=clock.now(),
+            )
             await mark_failed(session, scheduled_action_id, error=str(exc))
             return ExecutionResult(status=ExecutionStatus.FAILED, channel_success=None)
 
     # TR-27: cost and the outbox's terminal status commit together -- both
     # statements on this session, one commit, no partial state where the
-    # cost landed but the row is still `claimed` (or vice versa).
+    # cost landed but the row is still `claimed` (or vice versa). The
+    # audit event (I4) joins the same commit for the same reason.
+    await record_event(
+        session,
+        case_id=case.id,
+        kind=AuditKind.ACTION_EXECUTED,
+        payload={
+            "action_id": str(action.id),
+            "channel": action.channel.value,
+            "step_id": action.step_id,
+            "attempt": action.attempt,
+            "cost_paise": action.cost.paise,
+            "channel_success": result.success,
+            "dry_run": dry_run,
+        },
+        actor=Actor.scheduler(),
+        trace_id=current_trace_id(),
+        occurred_at=clock.now(),
+    )
     await session.execute(
         update(CaseRow)
         .where(CaseRow.id == case.id)
