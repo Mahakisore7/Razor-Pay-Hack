@@ -75,6 +75,7 @@ class AuditKind(StrEnum):
     LLM_FALLBACK = "llm_fallback"
     PLAN_CREATED = "plan_created"
     PLAN_STEP_DROPPED = "plan_step_dropped"
+    CASE_HELD_OUT = "case_held_out"
     POLICY_EVALUATED = "policy_evaluated"
     POLICY_DENIED = "policy_denied"
     POLICY_DEFERRED = "policy_deferred"
