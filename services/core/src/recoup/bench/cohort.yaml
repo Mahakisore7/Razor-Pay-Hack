@@ -1,0 +1,67 @@
+# Every cohort-generation parameter, externalised and published in the
+# benchmark report (T3.1/T3.7) so a reviewer can see exactly what
+# population produced the numbers. As with `gateway/simulator/simulator.yaml`
+# (ADR-0004), nothing here is tuned to reproduce real-world rates -- only
+# the *internal* comparison between arms on this generated cohort is ever
+# claimed.
+
+leak_class_mix:
+  L1: 0.55 # failed one-time payment -- the most common leak
+  L2: 0.30 # failed mandate debit
+  L3: 0.15 # halted subscription
+
+instrument_mix:
+  upi: 0.45
+  card: 0.35
+  netbanking: 0.10
+  wallet: 0.10
+
+issuer_mix:
+  HDFC: 0.22
+  ICICI: 0.20
+  SBI: 0.18
+  Axis: 0.15
+  Kotak: 0.10
+  YesBank: 0.08
+  IDFC: 0.07
+
+# Per leak class -- the plausible decline causes differ (a halted
+# subscription is rarely an expired card; a failed mandate debit is
+# never "invalid_instrument"), so a single shared mix would misrepresent
+# the population T3.6 measures against.
+decline_category_mix:
+  L1:
+    insufficient_funds: 0.30
+    issuer_declined: 0.25
+    network_timeout: 0.15
+    invalid_instrument: 0.10
+    expired_instrument: 0.08
+    limit_exceeded: 0.07
+    authentication_failed: 0.05
+  L2:
+    insufficient_funds: 0.35
+    mandate_exhausted: 0.20
+    mandate_revoked: 0.15
+    mandate_amount_exceeded: 0.15
+    issuer_declined: 0.15
+  L3:
+    customer_abandoned: 0.40
+    insufficient_funds: 0.25
+    mandate_revoked: 0.20
+    risk_blocked: 0.15
+
+# Log-normal: median_paise * exp(sigma * z), floored at min_paise.
+amount:
+  min_paise: 5000 # INR 50 floor
+  median_paise: 150000 # INR 1,500 median
+  sigma: 0.9 # heavy tail
+
+# Beta(alpha, beta) -- a latent, per-customer willingness to pay,
+# sampled once per case. Same shape as `simulator.yaml`'s own
+# `customer_propensity`, deliberately independent parameters.
+customer_propensity:
+  alpha: 2.0
+  beta: 3.0
+
+# Cases are detected across this many hours from the cohort's start time.
+detection_window_hours: 168.0 # a 7-day intake window
