@@ -1,0 +1,132 @@
+"""The durable outbox (DATA-MODEL SS3.3, TR-24): claim, reclaim, complete.
+
+Claiming is one atomic `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE
+SKIP LOCKED LIMIT :batch) RETURNING *` -- not a `SELECT` followed by a
+separate `UPDATE` -- so that the row lock `SKIP LOCKED` takes is held for
+the shortest possible window and no second statement round-trip can race
+another worker between them. `SKIP LOCKED` is what lets many workers claim
+disjoint batches without blocking each other; the `claim_expires_at` TTL
+is what makes a worker crash recoverable (TR-56) -- an expired claim
+returns to `pending` on the next `reclaim_expired_claims` call, and the
+derived idempotency key (TR-23, T2.7's scope) is what keeps that reclaim
+from producing a second side effect.
+
+Nothing here executes an action -- claiming and completing are the whole
+of this module's job. A future executor (T2.7) is the caller that hands a
+claimed batch to a channel and reports back with `mark_done`/`mark_failed`.
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any, cast
+from uuid import UUID
+
+from sqlalchemy import CursorResult, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from recoup.platform.clock import Clock
+from recoup.platform.models import ScheduledActionRow
+
+__all__ = [
+    "DEFAULT_CLAIM_TTL",
+    "claim_due_batch",
+    "mark_done",
+    "mark_failed",
+    "reclaim_expired_claims",
+]
+
+DEFAULT_CLAIM_TTL = timedelta(minutes=5)
+
+
+async def claim_due_batch(
+    session: AsyncSession,
+    clock: Clock,
+    *,
+    worker_id: str,
+    batch_size: int,
+    claim_ttl: timedelta = DEFAULT_CLAIM_TTL,
+) -> list[ScheduledActionRow]:
+    """Claims up to `batch_size` due, pending rows for `worker_id`, and
+    returns exactly the rows this call claimed, oldest `due_at` first.
+
+    The subquery's `ORDER BY due_at` picks *which* rows this call claims,
+    but `UPDATE ... RETURNING` does not itself preserve that order -- the
+    returned rows come back in whatever order Postgres's plan produces
+    them, which is not due_at order. The explicit sort below is what
+    actually delivers the "oldest first" contract this function promises.
+    """
+    now = clock.now()
+    claimable_ids = (
+        select(ScheduledActionRow.id)
+        .where(ScheduledActionRow.status == "pending", ScheduledActionRow.due_at <= now)
+        .order_by(ScheduledActionRow.due_at)
+        .limit(batch_size)
+        .with_for_update(skip_locked=True)
+    )
+    stmt = (
+        update(ScheduledActionRow)
+        .where(ScheduledActionRow.id.in_(claimable_ids))
+        .values(
+            status="claimed",
+            claimed_by=worker_id,
+            claimed_at=now,
+            claim_expires_at=now + claim_ttl,
+            attempts=ScheduledActionRow.attempts + 1,
+        )
+        .returning(ScheduledActionRow)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    claimed = sorted(result.scalars().all(), key=lambda row: row.due_at)
+    await session.commit()
+    return claimed
+
+
+async def reclaim_expired_claims(session: AsyncSession, clock: Clock) -> int:
+    """Returns every `claimed` row whose TTL has passed to `pending`, and
+    reports how many it reclaimed."""
+    now = clock.now()
+    reclaimable_ids = (
+        select(ScheduledActionRow.id)
+        .where(ScheduledActionRow.status == "claimed", ScheduledActionRow.claim_expires_at < now)
+        .with_for_update(skip_locked=True)
+    )
+    stmt = (
+        update(ScheduledActionRow)
+        .where(ScheduledActionRow.id.in_(reclaimable_ids))
+        .values(status="pending", claimed_by=None, claimed_at=None, claim_expires_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return cast("CursorResult[Any]", result).rowcount
+
+
+async def mark_done(session: AsyncSession, scheduled_action_id: UUID) -> bool:
+    """Only transitions a row that is still `claimed` -- if its TTL
+    already expired and another worker reclaimed it in the meantime, this
+    returns `False` rather than overwriting whatever that worker is now
+    doing with it."""
+    return await _complete(session, scheduled_action_id, status="done")
+
+
+async def mark_failed(session: AsyncSession, scheduled_action_id: UUID, *, error: str) -> bool:
+    return await _complete(session, scheduled_action_id, status="failed", last_error=error)
+
+
+async def _complete(
+    session: AsyncSession, scheduled_action_id: UUID, *, status: str, last_error: str | None = None
+) -> bool:
+    stmt = (
+        update(ScheduledActionRow)
+        .where(
+            ScheduledActionRow.id == scheduled_action_id,
+            ScheduledActionRow.status == "claimed",
+        )
+        .values(status=status, last_error=last_error)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return cast("CursorResult[Any]", result).rowcount > 0
