@@ -13,6 +13,7 @@ from recoup.domain.case import (
     IllegalTransition,
     assign_arm,
 )
+from recoup.domain.consent import ConsentEvent, ConsentSource, consent_at
 from recoup.domain.decline import DeclineCategory, RetryHorizon
 from recoup.domain.diagnosis import Diagnosis, DiagnosisMethod, Evidence, Hypothesis, RootCause
 from recoup.domain.errors import RecoupError
@@ -24,6 +25,15 @@ from recoup.domain.identifiers import (
     SignalId,
     hash_contact,
     uuid7,
+)
+from recoup.domain.mandate import (
+    Frequency,
+    Mandate,
+    MandateAmountExceededError,
+    MandateBudgetExhaustedError,
+    MandateNotValidError,
+    MandateRail,
+    MandateStatus,
 )
 from recoup.domain.money import Currency, Money
 from recoup.domain.outcome import Outcome, OutcomeKind
@@ -42,6 +52,8 @@ __all__ = [
     "CaseId",
     "CaseState",
     "Channel",
+    "ConsentEvent",
+    "ConsentSource",
     "CostCeilingExceededError",
     "Currency",
     "CustomerRef",
@@ -49,9 +61,16 @@ __all__ = [
     "Diagnosis",
     "DiagnosisMethod",
     "Evidence",
+    "Frequency",
     "Hypothesis",
     "IllegalTransition",
     "LeakClass",
+    "Mandate",
+    "MandateAmountExceededError",
+    "MandateBudgetExhaustedError",
+    "MandateNotValidError",
+    "MandateRail",
+    "MandateStatus",
     "Money",
     "Outcome",
     "OutcomeKind",
@@ -66,6 +85,7 @@ __all__ = [
     "SignalId",
     "Verdict",
     "assign_arm",
+    "consent_at",
     "hash_contact",
     "uuid7",
 ]
