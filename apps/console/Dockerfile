@@ -21,6 +21,13 @@ RUN pnpm build
 
 FROM base AS runtime
 
+# node:22-slim bundles npm's own CLI and its full dependency tree (pacote,
+# sigstore, tar, ...) under /usr/local/lib/node_modules/npm -- the runtime
+# stage never invokes npm/pnpm/corepack (it only runs `node server.js`), so
+# that tree is pure attack surface. Strip it rather than accept its CVEs.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/corepack.js
+
 RUN groupadd --system console && \
     useradd --system --gid console --no-create-home --shell /usr/sbin/nologin console
 
