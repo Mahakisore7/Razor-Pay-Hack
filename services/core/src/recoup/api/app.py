@@ -7,7 +7,7 @@ enforced by the nothing-imports-api import-linter contract.
 
 from fastapi import FastAPI
 
-from recoup.api.routes import health, metrics
+from recoup.api.routes import health, metrics, webhooks
 from recoup.platform.config import get_settings
 from recoup.platform.logging import configure_logging
 
@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(metrics.router)
+    app.include_router(webhooks.router)
 
     return app
 

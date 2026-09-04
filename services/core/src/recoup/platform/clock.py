@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-__all__ = ["Clock", "FrozenClock", "SystemClock"]
+__all__ = ["Clock", "FrozenClock", "SystemClock", "get_clock"]
 
 
 class Clock(Protocol):
@@ -46,3 +46,12 @@ class FrozenClock:
 
     def advance(self, delta: timedelta) -> None:
         self._current += delta
+
+
+def get_clock() -> Clock:
+    """FastAPI dependency: the real clock at the process boundary.
+
+    Tests override this with a `FrozenClock` via `app.dependency_overrides`
+    rather than monkeypatching `datetime.now` -- the same DI seam
+    `get_session`/`get_settings` already use."""
+    return SystemClock()

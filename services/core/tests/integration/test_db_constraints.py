@@ -5,61 +5,19 @@ same as a mocked `SKIP LOCKED` (ENGINEERING-STANDARDS SS4.2) -- these are
 the tests that don't.
 """
 
-import os
-import shutil
-import subprocess
 import uuid
-from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
-from testcontainers.community.postgres import PostgresContainer
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from recoup.platform.models import Base
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
-
-_SERVICE_ROOT = Path(__file__).resolve().parents[2]
-
-
-@pytest.fixture(scope="module")
-def migrated_database_url() -> Iterator[str]:
-    """Starts Postgres and applies the real Alembic migration -- not
-    `Base.metadata.create_all()`, which would skip the hand-written
-    triggers that exist only in the migration, not in the SQLAlchemy
-    metadata. Runs `alembic upgrade` as a subprocess deliberately:
-    invoking it in-process would nest its own `asyncio.run()` inside
-    pytest-asyncio's already-running loop (see F-005 in FAILURE-LOG for
-    this codebase's prior history with exactly that class of bug).
-    """
-    uv_path = shutil.which("uv")
-    assert uv_path is not None, "uv must be on PATH to run this integration test"
-    with PostgresContainer("postgres:16-alpine", driver="asyncpg") as pg:
-        url = pg.get_connection_url()
-        subprocess.run(  # noqa: S603 -- uv_path is resolved via shutil.which, args are hardcoded
-            [uv_path, "run", "alembic", "upgrade", "head"],
-            cwd=_SERVICE_ROOT,
-            env={**os.environ, "DATABASE_URL": url},
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        yield url
-
-
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def engine(migrated_database_url: str) -> AsyncIterator[AsyncEngine]:
-    eng = create_async_engine(migrated_database_url)
-    try:
-        yield eng
-    finally:
-        await eng.dispose()
 
 
 async def test_migrated_schema_has_a_table_for_every_declared_model(engine: AsyncEngine) -> None:

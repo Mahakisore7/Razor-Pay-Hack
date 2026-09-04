@@ -5,7 +5,7 @@ run at."""
 
 from datetime import UTC, datetime, timedelta
 
-from recoup.platform.clock import Clock, FrozenClock, SystemClock
+from recoup.platform.clock import Clock, FrozenClock, SystemClock, get_clock
 
 
 def test_system_clock_returns_a_timezone_aware_datetime() -> None:
@@ -31,6 +31,12 @@ def test_frozen_clock_advance_moves_forward_by_a_delta() -> None:
     clock = FrozenClock(datetime(2026, 1, 1, tzinfo=UTC))
     clock.advance(timedelta(hours=3))
     assert clock.now() == datetime(2026, 1, 1, 3, tzinfo=UTC)
+
+
+def test_get_clock_returns_a_system_clock() -> None:
+    clock = get_clock()
+    assert isinstance(clock, SystemClock)
+    assert clock.now().tzinfo is not None
 
 
 def test_system_clock_and_frozen_clock_both_satisfy_the_clock_protocol() -> None:
