@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
 from recoup.diagnosis.engine import stub_diagnose
 from recoup.domain.action import Channel
-from recoup.domain.case import Arm, Case, CaseState
+from recoup.domain.case import Arm, Case, CaseState, IllegalTransition
 from recoup.domain.decline import DeclineCategory
 from recoup.domain.identifiers import SignalId, uuid7
 from recoup.domain.money import Currency, Money
@@ -23,7 +23,14 @@ from recoup.planning.playbooks.loader import load_playbooks
 from recoup.planning.playbooks.schema import Playbook
 from recoup.planning.repository import persist_plan
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import ActionRow, AuditEventRow, CaseRow, PlannedStepRow, PlanRow
+from recoup.platform.models import (
+    ActionRow,
+    AuditEventRow,
+    CaseRow,
+    PlannedStepRow,
+    PlanRow,
+    ScheduledActionRow,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -32,7 +39,10 @@ _PLAYBOOKS = load_playbooks()
 
 
 async def _seed_planned_case(
-    sessionmaker: async_sessionmaker[AsyncSession], razorpay_customer_id: str
+    sessionmaker: async_sessionmaker[AsyncSession],
+    razorpay_customer_id: str,
+    *,
+    arm: Arm = Arm.TREATMENT,
 ) -> tuple[Case, Playbook, PlanningResult]:
     async with sessionmaker() as session:
         customer = await resolve_customer(session, razorpay_customer_id)
@@ -49,14 +59,14 @@ async def _seed_planned_case(
         case = await open_case_for_signal(session, _CLOCK, seed=1, signal=signal)
     assert case is not None
 
-    # Force TREATMENT: `assign_arm` is seed-derived and I7 forbids a
-    # control-arm case from ever reaching EXECUTING, which `persist_plan`
-    # always does -- these tests need a deterministic, plannable arm.
-    case.arm = Arm.TREATMENT
+    # Force the requested arm: `assign_arm` is seed-derived, and I7
+    # forbids a control-arm case from ever reaching EXECUTING, which
+    # `persist_plan` always does -- these tests need a deterministic,
+    # plannable arm (or, for the P9 test below, a deterministically
+    # unplannable one).
+    case.arm = arm
     async with sessionmaker() as session:
-        await session.execute(
-            update(CaseRow).where(CaseRow.id == case.id).values(arm=Arm.TREATMENT.value)
-        )
+        await session.execute(update(CaseRow).where(CaseRow.id == case.id).values(arm=arm.value))
         await session.commit()
 
     diagnosis = stub_diagnose(case.id, DeclineCategory.INSUFFICIENT_FUNDS, _CLOCK)
@@ -207,3 +217,51 @@ async def test_persist_plan_realises_steps_due_at_their_own_planned_time(
     assert retry_action.due_at == _CLOCK.now() + timedelta(hours=6)
     assert link_action.due_at == retry_action.due_at + timedelta(hours=24)
     assert realised[0][0].due_at < realised[1][0].due_at  # returned in due_at order
+
+
+async def test_persist_plan_raises_and_writes_nothing_for_a_control_arm_case(
+    engine: AsyncEngine,
+) -> None:
+    """P9 (POLICY-ENGINE SS6.2; PHASE-03 T3.2): a control-arm case
+    accumulates zero executed actions under any input sequence.
+    `test_case_state_machine.py::control_never_executes` already proves
+    this holds for the pure in-memory `Case.transition_to` guard; this
+    confirms it holds at the persistence layer too -- `persist_plan`
+    calls `case.transition_to(EXECUTING)` *before* adding a single row
+    (planning/repository.py), so I7 rejects a control-arm case before
+    any `PlanRow`, `ActionRow`, or `ScheduledActionRow` is ever written,
+    not merely before one would be claimed or run.
+    """
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case, playbook, result = await _seed_planned_case(
+        sessionmaker, "cust_plan_repo_control", arm=Arm.CONTROL
+    )
+
+    async with sessionmaker() as session:
+        with pytest.raises(IllegalTransition):
+            await persist_plan(session, _CLOCK, case=case, playbook=playbook, result=result)
+
+    async with sessionmaker() as session:
+        action_rows = (
+            (await session.execute(select(ActionRow).where(ActionRow.case_id == case.id)))
+            .scalars()
+            .all()
+        )
+        scheduled_rows = (
+            (
+                await session.execute(
+                    select(ScheduledActionRow).where(ScheduledActionRow.case_id == case.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        plan_rows = (
+            (await session.execute(select(PlanRow).where(PlanRow.case_id == case.id)))
+            .scalars()
+            .all()
+        )
+
+    assert action_rows == []
+    assert scheduled_rows == []
+    assert plan_rows == []

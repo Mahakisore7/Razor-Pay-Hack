@@ -7,9 +7,11 @@ Transitions are an explicit table. Anything not in the table raises
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from types import MappingProxyType
 
 from recoup.domain.diagnosis import Diagnosis
 from recoup.domain.errors import RecoupError
@@ -19,6 +21,7 @@ from recoup.domain.outcome import Outcome
 from recoup.domain.plan import Plan
 
 __all__ = [
+    "DEFAULT_ARM_WEIGHTS",
     "TERMINAL_STATES",
     "Arm",
     "Case",
@@ -35,18 +38,47 @@ class Arm(StrEnum):
     TREATMENT = "treatment"
 
 
-def assign_arm(seed: int, case_id: CaseId) -> Arm:
-    """Deterministically assign an arm from `hash(seed | case_id)`.
+# PHASE-03 T3.2: 10% control, 10% baseline, 80% treatment -- few cases
+# sacrificed to the counterfactual arms, most into the arm the product
+# actually bets on. A caller with its own config (T3.5's benchmark
+# runner, a future live-traffic settings field) overrides this rather
+# than being stuck with it.
+DEFAULT_ARM_WEIGHTS: Mapping[Arm, float] = MappingProxyType(
+    {Arm.CONTROL: 0.10, Arm.BASELINE: 0.10, Arm.TREATMENT: 0.80}
+)
+
+
+def assign_arm(
+    seed: int, case_id: CaseId, weights: Mapping[Arm, float] = DEFAULT_ARM_WEIGHTS
+) -> Arm:
+    """Deterministically assign an arm from `hash(seed | case_id)`, split
+    according to `weights` (PHASE-03 T3.2 checklist: "configurable").
 
     Python's builtin `hash()` is randomised per-process for str/bytes
     (`PYTHONHASHSEED`), which would make arm assignment non-reproducible --
     fatal for A1.7, the determinism gate every benchmark number depends on.
     `sha256` is stable across processes and interpreters instead.
+
+    A weighted cumulative-threshold pick, not `hash % len(arms)`: the
+    latter can only ever produce a uniform split, and T3.2 explicitly
+    calls for a 10/10/80 split, not 33/33/33. Same technique
+    `gateway.simulator.world` and `bench.cohort` already use for their own
+    weighted sampling, for the same reason.
     """
     digest = hashlib.sha256(f"{seed}|{case_id}".encode()).digest()
-    arms = list(Arm)
-    index = int.from_bytes(digest[:8], "big") % len(arms)
-    return arms[index]
+    roll = int.from_bytes(digest[:8], "big") / 2**64
+    total = sum(weights.values())
+    threshold = roll * total
+    cumulative = 0.0
+    ordered = sorted(weights, key=str)
+    for arm in ordered:
+        cumulative += weights[arm]
+        if threshold < cumulative:
+            return arm
+    # Unreachable in practice: `roll` is strictly < 1.0 (a 64-bit numerator
+    # over a 2**64 denominator), so `threshold` is strictly less than the
+    # final cumulative total and the loop above always returns first.
+    return ordered[-1]  # pragma: no cover
 
 
 class CaseState(StrEnum):
