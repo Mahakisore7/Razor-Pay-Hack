@@ -18,13 +18,20 @@ from recoup.audit.events import Actor, AuditKind
 from recoup.audit.repository import record_event
 from recoup.domain.action import Channel
 from recoup.domain.consent import ConsentEvent, ConsentSource
+from recoup.domain.contact import ContactEvent
 from recoup.domain.identifiers import CaseId, CustomerRef
 from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.platform.clock import Clock
 from recoup.platform.logging import current_trace_id
-from recoup.platform.models import ConsentEventRow, PolicyDecisionRow
+from recoup.platform.models import ConsentEventRow, ContactEventRow, PolicyDecisionRow
 
-__all__ = ["load_consent_events", "persist_decision", "record_consent"]
+__all__ = [
+    "load_consent_events",
+    "load_contact_history",
+    "persist_decision",
+    "record_consent",
+    "record_contact",
+]
 
 
 async def persist_decision(
@@ -143,5 +150,49 @@ async def load_consent_events(
             source=ConsentSource(row.source),
             occurred_at=row.occurred_at,
         )
+        for row in rows
+    )
+
+
+async def record_contact(
+    session: AsyncSession, *, customer: CustomerRef, channel: Channel, occurred_at: datetime
+) -> None:
+    """Appends one row to the contact history (DATA-MODEL SS3.4-adjacent
+    `contact_events`) -- what R7 (frequency_cap.py) counts against. Called
+    by `execution.executor.execute` on every real, non-suppressed send on
+    a customer-facing channel, regardless of the channel's own reported
+    success: an attempted send is still an attempt to reach the customer.
+    """
+    session.add(
+        ContactEventRow(
+            id=uuid.uuid4(),
+            customer_id=uuid.UUID(customer.id),
+            channel=channel.value,
+            occurred_at=occurred_at,
+        )
+    )
+
+
+async def load_contact_history(
+    session: AsyncSession, customer: CustomerRef, *, since: datetime
+) -> tuple[ContactEvent, ...]:
+    """Every contact on or after `since`, across all of this customer's
+    cases -- R7 is counted across all cases for a customer, not per case
+    (POLICY-ENGINE SS3), so this is scoped by customer alone, the same way
+    `load_consent_events` is."""
+    rows = (
+        (
+            await session.execute(
+                select(ContactEventRow).where(
+                    ContactEventRow.customer_id == uuid.UUID(customer.id),
+                    ContactEventRow.occurred_at >= since,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(
+        ContactEvent(customer=customer, channel=Channel(row.channel), occurred_at=row.occurred_at)
         for row in rows
     )

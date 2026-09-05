@@ -10,12 +10,15 @@ carry one in their own transitive closure) anywhere in this package.
 Rules run in the order POLICY-ENGINE SS2.2 mandates: cheapest and most
 absolute first, so the recorded `rule_id` names the most fundamental
 reason an action was refused, not an incidental one. T2.5 shipped the
-"skeleton" (kill switch, domain guards, consent, cost ceiling); T4.1
-adds DND between consent and cost ceiling, matching R5's position in
-POLICY-ENGINE SS2's own decision diagram. The rest of POLICY-ENGINE SS3's
-rule set (stopping rules, quiet hours, frequency cap, mandate budget,
-approval threshold, rate limits) lands with the phase that actually needs
-it; `evaluate`'s dispatch loop does not change shape when they do -- only
+"skeleton" (kill switch, domain guards, consent, cost ceiling); T4.1 adds
+DND, quiet hours, and frequency cap between consent and cost ceiling
+(matching R5-R7's position in POLICY-ENGINE SS2's own decision diagram),
+plus rate limits at the very end -- POLICY-ENGINE SS2's diagram omits R11
+entirely, so it runs last as the final gate on the sending infrastructure
+itself, after every compliance and economic check has already passed.
+The rest of POLICY-ENGINE SS3's rule set (stopping rules, mandate budget,
+approval threshold) lands with the phase that actually needs it;
+`evaluate`'s dispatch loop does not change shape when they do -- only
 `_RULES` grows.
 """
 
@@ -24,7 +27,16 @@ from __future__ import annotations
 from recoup.domain.action import Action
 from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.policy.context import PolicyContext
-from recoup.policy.rules import consent, cost_ceiling, dnd, domain_guards, kill_switch
+from recoup.policy.rules import (
+    consent,
+    cost_ceiling,
+    dnd,
+    domain_guards,
+    frequency_cap,
+    kill_switch,
+    quiet_hours,
+    rate_limit,
+)
 from recoup.policy.rules.base import Rule
 
 __all__ = ["evaluate"]
@@ -34,7 +46,10 @@ _RULES: tuple[Rule, ...] = (
     domain_guards.evaluate,
     consent.evaluate,
     dnd.evaluate,
+    quiet_hours.evaluate,
+    frequency_cap.evaluate,
     cost_ceiling.evaluate,
+    rate_limit.evaluate,
 )
 
 

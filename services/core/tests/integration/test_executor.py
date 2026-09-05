@@ -37,6 +37,7 @@ from recoup.platform.models import (
     ActionRow,
     AuditEventRow,
     CaseRow,
+    ContactEventRow,
     PolicyDecisionRow,
     ScheduledActionRow,
 )
@@ -391,6 +392,130 @@ async def test_execute_calls_a_stubbed_messaging_channel_and_still_accounts_cost
     assert result.channel_success is True
     row = await _case_row(sessionmaker, case.id)
     assert row.cost_spent_paise == 18
+
+
+# --- contact history (T4.1, R7): written on a real, non-exempt send --------------
+
+
+async def test_execute_records_contact_history_for_a_messaging_channel(
+    engine: AsyncEngine, redis_client: Redis
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    sim = RazorpaySimulator(seed=4)
+    case, action, scheduled_id = await _seed(
+        sessionmaker, razorpay_customer_id="cust_contact_sms", channel=Channel.SMS
+    )
+
+    async with sessionmaker() as session:
+        await execute(
+            session,
+            redis_client,
+            sim,
+            _CLOCK,
+            action=action,
+            case=case,
+            scheduled_action_id=scheduled_id,
+        )
+
+    async with sessionmaker() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ContactEventRow).where(
+                        ContactEventRow.customer_id == uuid.UUID(case.customer.id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].channel == Channel.SMS.value
+    assert rows[0].occurred_at == _CLOCK.now()
+
+
+async def test_execute_does_not_record_contact_history_for_payment_retry_or_link(
+    engine: AsyncEngine, redis_client: Redis
+) -> None:
+    """`payment_retry` and `link` never reach the customer (`NON_CONTACT_
+    CHANNELS`), so neither counts toward R7's frequency cap."""
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    sim = RazorpaySimulator(seed=5)
+    case, action, scheduled_id = await _seed(
+        sessionmaker, razorpay_customer_id="cust_no_contact_link", channel=Channel.LINK
+    )
+
+    async with sessionmaker() as session:
+        await execute(
+            session,
+            redis_client,
+            sim,
+            _CLOCK,
+            action=action,
+            case=case,
+            scheduled_action_id=scheduled_id,
+        )
+
+    async with sessionmaker() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ContactEventRow).where(
+                        ContactEventRow.customer_id == uuid.UUID(case.customer.id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == []
+
+
+async def test_execute_does_not_record_contact_history_for_a_suppressed_duplicate(
+    engine: AsyncEngine, redis_client: Redis
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    sim = RazorpaySimulator(seed=6)
+    case, action, scheduled_id = await _seed(
+        sessionmaker, razorpay_customer_id="cust_contact_dup", channel=Channel.SMS
+    )
+
+    async with sessionmaker() as session:
+        first = await execute(
+            session,
+            redis_client,
+            sim,
+            _CLOCK,
+            action=action,
+            case=case,
+            scheduled_action_id=scheduled_id,
+        )
+    async with sessionmaker() as session:
+        second = await execute(
+            session,
+            redis_client,
+            sim,
+            _CLOCK,
+            action=action,
+            case=case,
+            scheduled_action_id=scheduled_id,
+        )
+
+    assert first.status == ExecutionStatus.EXECUTED
+    assert second.status == ExecutionStatus.SUPPRESSED
+    async with sessionmaker() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ContactEventRow).where(
+                        ContactEventRow.customer_id == uuid.UUID(case.customer.id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1  # not doubled by the suppressed replay
 
 
 # --- duplicate key: suppressed, never calls the channel twice --------------------

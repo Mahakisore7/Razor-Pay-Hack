@@ -26,6 +26,12 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.28",
     "prometheus-client>=0.21",
     "uuid-utils>=0.10",
+    # `zoneinfo` (R6, POLICY-ENGINE SS3) has no IANA database of its own on
+    # Windows and on minimal container images that lack system tzdata --
+    # this is the first-party package Python's own docs recommend so
+    # `ZoneInfo("Asia/Kolkata")` resolves the same way everywhere this
+    # ships, not only on hosts that happen to carry `/usr/share/zoneinfo`.
+    "tzdata>=2024.2",
 ]
 
 [project.scripts]

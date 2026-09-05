@@ -4,7 +4,7 @@ engine.py` itself never had, since `evaluate` is pure.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -19,7 +19,13 @@ from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.domain.signal import LeakClass, Signal, SignalContext
 from recoup.platform.clock import FrozenClock
 from recoup.platform.models import ActionRow, AuditEventRow, PolicyDecisionRow
-from recoup.policy.repository import load_consent_events, persist_decision, record_consent
+from recoup.policy.repository import (
+    load_consent_events,
+    load_contact_history,
+    persist_decision,
+    record_consent,
+    record_contact,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -264,3 +270,86 @@ async def test_load_consent_events_only_returns_the_given_customers_own_events(
         events = await load_consent_events(session, this_customer)
     assert len(events) == 1
     assert events[0].customer.id == this_customer.id
+
+
+# --- contact history (T4.1, R7) ---------------------------------------------
+
+
+async def test_load_contact_history_is_empty_for_a_customer_with_no_history(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_contact_repo_empty")
+        await session.commit()
+
+    async with sessionmaker() as session:
+        history = await load_contact_history(session, customer, since=_CLOCK.now())
+    assert history == ()
+
+
+async def test_record_contact_then_load_round_trips(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_contact_repo_roundtrip")
+        await record_contact(
+            session, customer=customer, channel=Channel.SMS, occurred_at=_CLOCK.now()
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        history = await load_contact_history(
+            session, customer, since=_CLOCK.now() - timedelta(days=7)
+        )
+    assert len(history) == 1
+    assert history[0].channel is Channel.SMS
+    assert history[0].occurred_at == _CLOCK.now()
+
+
+async def test_load_contact_history_excludes_events_before_since(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_contact_repo_window")
+        await record_contact(
+            session,
+            customer=customer,
+            channel=Channel.SMS,
+            occurred_at=_CLOCK.now() - timedelta(days=8),
+        )
+        await record_contact(
+            session,
+            customer=customer,
+            channel=Channel.EMAIL,
+            occurred_at=_CLOCK.now() - timedelta(days=1),
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        history = await load_contact_history(
+            session, customer, since=_CLOCK.now() - timedelta(days=7)
+        )
+    assert len(history) == 1
+    assert history[0].channel is Channel.EMAIL
+
+
+async def test_load_contact_history_only_returns_the_given_customers_own_events(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        this_customer = await resolve_customer(session, "cust_contact_repo_mine")
+        other_customer = await resolve_customer(session, "cust_contact_repo_not_mine")
+        await record_contact(
+            session, customer=this_customer, channel=Channel.SMS, occurred_at=_CLOCK.now()
+        )
+        await record_contact(
+            session, customer=other_customer, channel=Channel.SMS, occurred_at=_CLOCK.now()
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        history = await load_contact_history(
+            session, this_customer, since=_CLOCK.now() - timedelta(days=7)
+        )
+    assert len(history) == 1
+    assert history[0].customer.id == this_customer.id

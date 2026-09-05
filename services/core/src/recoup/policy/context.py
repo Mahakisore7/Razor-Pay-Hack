@@ -4,23 +4,27 @@ A rule that touches the database is a rule that cannot be unit-tested or
 exactly replayed from a `PolicyDecision`'s recorded `inputs`.
 
 Scoped to exactly what T2.5/T4.1's rules (kill switch, domain guards,
-consent, DND, cost ceiling) consume. POLICY-ENGINE SS4's full contract
-also carries `contact_history`, `promise_to_pay`, `daily_spend`,
-`customer_timezone`, and `rate_limit_tokens` -- those arrive with the
-rules that actually read them (R2, R6, R7, R9-R11), in whichever phase
-builds them, not before. Notably absent for the same reason: a
-`playbook: Playbook` field. None of the rules here need more than the
-playbook's id (R1's per-playbook kill switch), and `recoup.planning` sits
-above `recoup.policy` in the layering contract -- policy cannot import it.
+consent, DND, quiet hours, frequency cap, cost ceiling, rate limits)
+consume. POLICY-ENGINE SS4's full contract also carries `promise_to_pay`
+and `daily_spend` -- those arrive with the rules that actually read them
+(R2, R8's global cap), in whichever phase builds them, not before.
+Notably absent for the same reason: a `playbook: Playbook` field. None of
+the rules here need more than the playbook's id (R1's per-playbook kill
+switch), and `recoup.planning` sits above `recoup.policy` in the layering
+contract -- policy cannot import it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
+from recoup.domain.action import Channel
 from recoup.domain.case import Case
 from recoup.domain.consent import ConsentEvent
+from recoup.domain.contact import ContactEvent
 from recoup.domain.mandate import Mandate
 
 __all__ = ["DndStatus", "KillSwitchState", "PolicyContext"]
@@ -56,5 +60,18 @@ class PolicyContext:
     playbook_id: str
     consent_events: tuple[ConsentEvent, ...]
     dnd_status: DndStatus
+    # R6 (POLICY-ENGINE SS3): evaluated in the customer's own timezone,
+    # not the server's -- P3 requires this to hold for any timezone.
+    customer_timezone: ZoneInfo
+    # R7: all of the customer's cases, not just this one -- "counted
+    # across all cases for that customer, not per case" (POLICY-ENGINE
+    # SS3). PolicyContext's own comment above still applies: a rule reads
+    # this value, it never queries `contact_events` itself.
+    contact_history: tuple[ContactEvent, ...]
     mandate: Mandate | None
     kill_switch: KillSwitchState
+    # R11: a snapshot token count per channel, gathered the same way
+    # `KillSwitchState` is -- a live token bucket lives in Redis, read
+    # fresh before `evaluate` is ever called, never inside the rule
+    # itself. A channel absent here is unconstrained, not exhausted.
+    rate_limit_tokens: Mapping[Channel, int]

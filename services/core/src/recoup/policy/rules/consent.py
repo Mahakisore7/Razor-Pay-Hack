@@ -8,23 +8,23 @@ Absence of a record is refusal, never permission.
 (T2.7 -- "payment_retry and payment_link via the gateway"), not a message
 to the customer on a channel they can opt in or out of. Consent, as
 POLICY-ENGINE SS3/SS12 frame it, governs contact -- an automated
-re-presentation of a mandate debit is not contact.
+re-presentation of a mandate debit is not contact. `NON_CONTACT_CHANNELS`
+(domain/action.py) is shared with R7 (frequency_cap.py) and the executor's
+contact-history writer, all three asking this same question.
 """
 
 from __future__ import annotations
 
-from recoup.domain.action import Action, Channel
+from recoup.domain.action import NON_CONTACT_CHANNELS, Action
 from recoup.domain.consent import consent_at
 from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.policy.context import PolicyContext
 
 __all__ = ["evaluate"]
 
-_EXEMPT_CHANNELS = frozenset({Channel.PAYMENT_RETRY, Channel.LINK})
-
 
 def evaluate(action: Action, ctx: PolicyContext) -> PolicyDecision | None:
-    if action.channel in _EXEMPT_CHANNELS:
+    if action.channel in NON_CONTACT_CHANNELS:
         return None
     if consent_at(ctx.consent_events, action.channel, action.due_at):
         return None
