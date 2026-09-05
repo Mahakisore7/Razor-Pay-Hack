@@ -172,6 +172,10 @@ class Case:
     opened_at: datetime
     cost_spent: Money
     cost_ceiling: Money
+    # The originating Signal's own field of the same name (T3.5) -- carried
+    # here so a `payment_retry` action's payload can be populated without
+    # every planning-side caller re-fetching the Signal.
+    source_payment_id: str | None = None
     diagnosis: Diagnosis | None = None
     plan: Plan | None = None
     terminal_outcome: Outcome | None = None

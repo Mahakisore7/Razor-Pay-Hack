@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoup.audit.events import Actor, AuditKind
 from recoup.audit.repository import record_event
-from recoup.domain.action import Action, ActionPayload
+from recoup.domain.action import Action, ActionPayload, Channel
 from recoup.domain.case import Case, CaseState
 from recoup.domain.identifiers import ActionId
 from recoup.domain.money import Money
@@ -83,13 +83,22 @@ async def persist_plan(
         )
         playbook_step = steps_by_id[planned.step_id]
         action_id = uuid.uuid4()
+        # T3.5: a payment_retry step needs the id of the payment it is
+        # re-presenting -- the only fact `Case` carries for that. Every
+        # other channel's payload stays empty; nothing else this phase
+        # reads a variable from it.
+        payload = (
+            ActionPayload(variables={"payment_id": case.source_payment_id})
+            if playbook_step.channel == Channel.PAYMENT_RETRY and case.source_payment_id is not None
+            else ActionPayload()
+        )
         action = Action(
             id=ActionId(action_id),
             case_id=case.id,
             step_id=planned.step_id,
             attempt=1,
             channel=playbook_step.channel,
-            payload=ActionPayload(),
+            payload=payload,
             cost=Money(0, case.at_risk.currency),
             due_at=planned.due_at,
         )
@@ -101,7 +110,7 @@ async def persist_plan(
                 attempt=1,
                 channel=playbook_step.channel.value,
                 idempotency_key=action.idempotency_key,
-                payload={},
+                payload={"template": payload.template, "variables": dict(payload.variables)},
                 cost_paise=0,
                 due_at=planned.due_at,
             )

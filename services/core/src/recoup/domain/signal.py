@@ -49,6 +49,13 @@ class Signal:
     source_event_ids: tuple[str, ...]
     decline: DeclineCategory | None
     context: SignalContext
+    # The originating Razorpay payment id this signal is *about* -- present
+    # for L1/L2 (a failed one-time payment or mandate debit is always a
+    # Payment underneath), `None` for L3 (a halted subscription has no one
+    # payment attempt to retry). A `payment_retry` action's payload has
+    # nothing else to populate this from (T3.5; previously an accepted,
+    # documented gap since dry-run execution never needed it).
+    source_payment_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.at_risk.paise <= 0:

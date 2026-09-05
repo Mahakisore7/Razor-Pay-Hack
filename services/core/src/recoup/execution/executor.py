@@ -90,6 +90,11 @@ class ExecutionStatus(StrEnum):
 class ExecutionResult:
     status: ExecutionStatus
     channel_success: bool | None  # None when suppressed or failed before the channel ran
+    # The channel's own `ChannelResult.reference` -- e.g. the new payment id
+    # a successful payment_retry produced (T3.5: a benchmark runner needs
+    # this to fetch and attribute that payment; nothing before T3.5 needed
+    # to know it). `None` for every status but EXECUTED.
+    reference: str | None = None
 
 
 def idempotency_key(action: Action) -> str:
@@ -192,4 +197,6 @@ async def execute(
     )
     await mark_done(session, clock, scheduled_action_id)
     await session.commit()
-    return ExecutionResult(status=ExecutionStatus.EXECUTED, channel_success=result.success)
+    return ExecutionResult(
+        status=ExecutionStatus.EXECUTED, channel_success=result.success, reference=result.reference
+    )

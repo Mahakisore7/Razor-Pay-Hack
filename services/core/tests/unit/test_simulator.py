@@ -1,6 +1,7 @@
 """RazorpaySimulator satisfies PaymentGateway with no network and no mock --
 it is a real (if synthetic) world, seeded and offline (ADR-0004)."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -59,6 +60,60 @@ async def test_fetch_payment_returns_a_seeded_payment() -> None:
     )
     fetched = await sim.fetch_payment(payment.id)
     assert fetched == payment
+
+
+def test_seed_failed_payment_is_always_failed_with_the_given_decline_category() -> None:
+    """T3.5: a benchmark cohort pre-assigns a decline category; the
+    initial seed must honour it rather than re-rolling through World,
+    which could just as easily land on `success`."""
+    sim = RazorpaySimulator(seed=1)
+    for _ in range(20):  # World rolls are seed/customer-derived -- vary the customer
+        payment = sim.seed_failed_payment(
+            customer_id=f"cust_{uuid.uuid4()}",
+            amount=Money(100_00),
+            method="upi",
+            issuer="HDFC",
+            at=_AT,
+            decline_category=DeclineCategory.INSUFFICIENT_FUNDS,
+        )
+        assert payment.status == PaymentStatus.FAILED
+        assert payment.error_reason == DeclineCategory.INSUFFICIENT_FUNDS.value
+
+
+def test_seed_failed_payment_records_ground_truth() -> None:
+    sim = RazorpaySimulator(seed=1)
+    payment = sim.seed_failed_payment(
+        customer_id="cust_1",
+        amount=Money(100_00),
+        method="upi",
+        issuer="HDFC",
+        at=_AT,
+        decline_category=DeclineCategory.ISSUER_DECLINED,
+    )
+    records = sim.ground_truth.all()
+    assert len(records) == 1
+    assert records[0].payment_id == payment.id
+    assert records[0].true_cause == "cohort_seed"
+    assert records[0].decline_category == DeclineCategory.ISSUER_DECLINED
+
+
+async def test_a_seed_failed_payment_can_then_be_retried_normally() -> None:
+    """The forced initial failure is the only thing bypassing World --
+    a subsequent retry against it rolls through `World.attempt_outcome`
+    exactly as any other retry would."""
+    sim = RazorpaySimulator(seed=1)
+    payment = sim.seed_failed_payment(
+        customer_id="cust_retry_after_seed",
+        amount=Money(100_00),
+        method="upi",
+        issuer="HDFC",
+        at=_AT,
+        decline_category=DeclineCategory.INSUFFICIENT_FUNDS,
+    )
+    result = await sim.retry_payment(
+        RetryRequest(payment_id=payment.id, attempt=2, at=_AT + timedelta(hours=6))
+    )
+    assert result.payment.id != payment.id  # a new attempt, not a mutation of the seed
 
 
 async def test_fetch_order_returns_a_test_seeded_order() -> None:

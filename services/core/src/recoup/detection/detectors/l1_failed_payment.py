@@ -22,6 +22,7 @@ def detect(event: InboundEvent, snapshot: DetectionSnapshot, clock: Clock) -> Si
     at_risk = amount_from(entity)
     if at_risk is None:
         return None
+    payment_id = entity.get("id")
     return Signal(
         id=SignalId(uuid7()),
         leak_class=LeakClass.L1_FAILED_ONE_TIME_PAYMENT,
@@ -31,4 +32,5 @@ def detect(event: InboundEvent, snapshot: DetectionSnapshot, clock: Clock) -> Si
         source_event_ids=(event.provider_event_id,),
         decline=event.decline_category,
         context=context_from(entity),
+        source_payment_id=payment_id if isinstance(payment_id, str) else None,
     )

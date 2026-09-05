@@ -7,6 +7,7 @@ Phase 2, `bench run` in Phase 3. Phase 0 ships the entry point itself and a
 
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -17,6 +18,8 @@ app = typer.Typer(
 )
 audit_app = typer.Typer(name="audit", help="Audit chain tools.", no_args_is_help=True)
 app.add_typer(audit_app, name="audit")
+bench_app = typer.Typer(name="bench", help="Three-arm benchmark tools.", no_args_is_help=True)
+app.add_typer(bench_app, name="bench")
 
 
 @app.command()
@@ -216,6 +219,57 @@ async def _audit_verify(case_id: uuid.UUID) -> None:
         typer.echo(f"case {case_id}: chain diverges at seq {divergence}")
         raise typer.Exit(code=1)
     typer.echo(f"case {case_id}: chain intact, {len(events)} event(s)")
+
+
+# A fixed simulated start, not `SystemClock`: A3.2 (T3.8's own phase gate)
+# requires two runs at the same seed to be byte-identical, which a
+# wall-clock-derived start_at would break -- the cohort's own detected_at
+# offsets, and therefore every World roll keyed off them, would shift with
+# whatever day the command happened to run on.
+_BENCH_START_AT = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+@bench_app.command("run")
+def bench_run(
+    seed: int = typer.Option(..., "--seed", help="Cohort and world seed."),
+    size: int = typer.Option(..., "--size", help="Cohort size (number of cases)."),
+) -> None:
+    """Runs the three-arm benchmark over a seeded cohort (T3.5)."""
+    import asyncio
+
+    asyncio.run(_bench_run(seed, size))
+
+
+async def _bench_run(seed: int, size: int) -> None:
+    from redis.asyncio import Redis
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from recoup.bench.runner import run_benchmark
+    from recoup.platform.config import get_settings
+
+    settings = get_settings()
+    # A dedicated, disposed-on-exit engine -- see `_import_events` above
+    # for why a one-shot command builds its own rather than reusing the
+    # process-wide singleton `platform.db.get_sessionmaker` hands a
+    # long-running server.
+    engine = create_async_engine(settings.database_url)
+    redis: Redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+        typer.echo(f"running benchmark: seed={seed} size={size}")
+        summary = await run_benchmark(
+            sessionmaker, redis, seed=seed, size=size, start_at=_BENCH_START_AT
+        )
+    finally:
+        await engine.dispose()
+        await redis.aclose()
+
+    typer.echo(
+        f"run {summary.run_id}: {summary.cases_opened}/{summary.size} cases opened "
+        f"({summary.finished_at - summary.started_at} simulated-clock elapsed)"
+    )
+    for arm, count in sorted(summary.cases_by_arm.items()):
+        typer.echo(f"  {arm}: {count}")
 
 
 def _run_placeholder_process(name: str, poll_interval: float) -> None:
