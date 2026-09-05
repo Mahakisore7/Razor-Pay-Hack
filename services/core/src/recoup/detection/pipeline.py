@@ -41,6 +41,19 @@ __all__ = [
     "run_detection",
 ]
 
+# T3.8's own reproducibility test caught this: `assign_arm(seed, case_id)`
+# is deterministic in `case_id`, but `case_id` itself was being generated
+# fresh with `uuid7()` (real-wall-clock-derived) at every case open, so
+# two runs of the *same* benchmark seed rolled different arms for "the
+# same" cohort case even though the arm-assignment function itself is a
+# pure, already-tested hash. `_ARM_ASSIGNMENT_NAMESPACE` derives a
+# stand-in identity from `Signal.source_event_ids` instead -- the
+# provider event id for real traffic, the cohort's own
+# `bench-cohort:{index}` for a benchmark run -- both already stable
+# across any re-processing of "the same" signal, unlike a freshly
+# generated primary key.
+_ARM_ASSIGNMENT_NAMESPACE = uuid.UUID("7b7f0b2e-9f0e-4c1a-9b1e-7a6e2e4d6f8a")
+
 _DETECTORS: tuple[Detector, ...] = (
     l1_failed_payment.detect,
     l2_failed_mandate_debit.detect,
@@ -161,6 +174,13 @@ async def open_case_for_signal(
     created, so there is nothing to have a chain. A real case gets three,
     `signal_detected` / `case_opened` / `arm_assigned`, sharing one
     `trace_id` and committed in the same transaction as the rows above.
+
+    `assign_arm` is hashed against a UUID5 derived from `signal.
+    source_event_ids`, not the case's own (freshly `uuid7()`-generated,
+    therefore non-reproducible) `case_id` -- see `_ARM_ASSIGNMENT_
+    NAMESPACE`'s own comment for why. `case_id` remains the row's real,
+    globally-unique primary key; only the arm-assignment hash's input
+    changed.
     """
     customer_id = uuid.UUID(signal.customer.id)
     signal_row = SignalRow(
@@ -177,7 +197,8 @@ async def open_case_for_signal(
     await session.flush()
 
     case_id = CaseId(uuid7())
-    arm = assign_arm(seed, case_id)
+    arm_key = CaseId(uuid.uuid5(_ARM_ASSIGNMENT_NAMESPACE, "|".join(signal.source_event_ids)))
+    arm = assign_arm(seed, arm_key)
     case_row = CaseRow(
         id=case_id,
         signal_id=signal_row.id,

@@ -191,6 +191,43 @@ async def test_a_dedup_no_op_writes_no_audit_event(engine: AsyncEngine) -> None:
         assert len(result.scalars().all()) == 3
 
 
+async def test_arm_assignment_is_reproducible_across_two_separately_opened_cases(
+    engine: AsyncEngine,
+) -> None:
+    """Regression test for a real bug T3.8's own reproducibility check
+    found: `open_case_for_signal` used to hash arm assignment against the
+    case's own freshly-`uuid7()`-generated id, which is real-wall-clock-
+    derived and therefore different every call -- so two signals with
+    the *same* source_event_ids (the stable identity `assign_arm` is
+    meant to be reproducible against, per T3.2's own "arm = f(hash(seed
+    | case_id))") could still roll different arms, at the same seed,
+    purely because they were processed a few microseconds apart. Two
+    different customers/amounts here (so TR-8 dedup does not swallow the
+    second one) with the identical `source_event_ids` must land on the
+    identical arm.
+    """
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as first_session:
+        first_customer = await resolve_customer(first_session, "cust_arm_repro_1")
+        first_signal = _signal(
+            first_customer, at_risk_paise=111_000, source_event_id="evt-arm-repro-shared"
+        )
+        first_case = await open_case_for_signal(first_session, _CLOCK, seed=99, signal=first_signal)
+    assert first_case is not None
+
+    async with sessionmaker() as second_session:
+        second_customer = await resolve_customer(second_session, "cust_arm_repro_2")
+        second_signal = _signal(
+            second_customer, at_risk_paise=222_000, source_event_id="evt-arm-repro-shared"
+        )
+        second_case = await open_case_for_signal(
+            second_session, _CLOCK, seed=99, signal=second_signal
+        )
+    assert second_case is not None
+
+    assert first_case.arm == second_case.arm
+
+
 async def test_open_case_for_signal_dedups_against_an_open_case_at_the_same_amount(
     engine: AsyncEngine,
 ) -> None:

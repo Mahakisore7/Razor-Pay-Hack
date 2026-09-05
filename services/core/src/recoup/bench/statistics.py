@@ -340,9 +340,25 @@ async def load_case_outcomes(
     benchmark run opened. Kept deliberately thin -- one query per table,
     joined in Python -- so the actual statistics above stay dependency-free
     and testable without a database.
+
+    `.order_by(CaseRow.id)`: SQL makes no row-order guarantee without one
+    -- T3.8's own reproducibility test found this table's scan order
+    happening to hold stable in practice, not structurally guaranteed to.
+    `compare_arms`' bootstrap resampling draws by list position
+    (`random.Random.choices`), so an unordered fetch would make two
+    otherwise-identical runs' resampled CIs liable to diverge for no
+    reason a reader could see in this module alone -- a fixed order (any
+    fixed order; `id` needs no join, unlike a content-derived key) is
+    what actually makes this function's own promise -- reproducible
+    statistics from a reproducible run -- hold structurally, not by luck
+    of a query plan.
     """
     case_rows = (
-        (await session.execute(select(CaseRow).where(CaseRow.bench_run_id == bench_run_id)))
+        (
+            await session.execute(
+                select(CaseRow).where(CaseRow.bench_run_id == bench_run_id).order_by(CaseRow.id)
+            )
+        )
         .scalars()
         .all()
     )
