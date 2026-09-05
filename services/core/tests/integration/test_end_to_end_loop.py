@@ -68,7 +68,7 @@ from recoup.platform.clock import Clock, FrozenClock, get_clock
 from recoup.platform.config import Settings
 from recoup.platform.db import get_session
 from recoup.platform.models import AuditEventRow, CaseRow, RawEvent, ScheduledActionRow
-from recoup.policy.context import KillSwitchState, PolicyContext
+from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.engine import evaluate
 from recoup.policy.repository import persist_decision
 
@@ -185,6 +185,7 @@ async def _gate_and_execute(
         case=case,
         playbook_id=playbook_id,
         consent_events=(),
+        dnd_status=DndStatus(registered=False),
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
     )

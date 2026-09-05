@@ -67,12 +67,14 @@ def _playbook(**overrides: object) -> Playbook:
             {
                 "id": "retry",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 6},
                 "expected_cost_paise": 0,
             },
             {
                 "id": "payment_link",
                 "channel": "link",
+                "category": "transactional",
                 "timing": {"policy": "relative", "after_step": "retry", "offset_hours": 24},
                 "expected_cost_paise": 0,
             },
@@ -142,6 +144,7 @@ def test_build_plan_omits_a_step_whose_skip_if_excludes_this_case() -> None:
             {
                 "id": "retry",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 0},
                 "expected_cost_paise": 0,
                 "skip_if": {"at_risk_below_paise": 50_000},
@@ -166,12 +169,14 @@ def test_build_plan_drops_the_last_non_required_step_to_fit_the_ceiling() -> Non
             {
                 "id": "step_a",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 0},
                 "expected_cost_paise": 30,
             },
             {
                 "id": "step_b",
                 "channel": "link",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 1},
                 "expected_cost_paise": 30,
             },
@@ -196,6 +201,7 @@ def test_build_plan_never_drops_a_required_step() -> None:
             {
                 "id": "step_a",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 0},
                 "expected_cost_paise": 5,
                 "required": True,
@@ -203,6 +209,7 @@ def test_build_plan_never_drops_a_required_step() -> None:
             {
                 "id": "step_b",
                 "channel": "link",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 1},
                 "expected_cost_paise": 200,
             },
@@ -223,6 +230,7 @@ def test_build_plan_raises_when_required_steps_alone_exceed_the_ceiling() -> Non
             {
                 "id": "step_a",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 0},
                 "expected_cost_paise": 50,
                 "required": True,
@@ -249,12 +257,14 @@ def test_build_plan_raises_when_a_relative_steps_anchor_is_dropped_for_cost() ->
             {
                 "id": "step1",
                 "channel": "payment_retry",
+                "category": "transactional",
                 "timing": {"policy": "fixed", "offset_hours": 0},
                 "expected_cost_paise": 80,
             },
             {
                 "id": "step2",
                 "channel": "link",
+                "category": "transactional",
                 "timing": {"policy": "relative", "after_step": "step1", "offset_hours": 4},
                 "expected_cost_paise": 50,
                 "required": True,

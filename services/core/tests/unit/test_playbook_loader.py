@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from recoup.domain.action import Channel
+from recoup.domain.action import ActionCategory, Channel
 from recoup.domain.signal import LeakClass
 from recoup.planning.playbooks.loader import PlaybookLoadError, load_playbooks
 
@@ -24,6 +24,7 @@ max_case_age_days: 21
 steps:
   - id: retry
     channel: payment_retry
+    category: transactional
     timing: { policy: fixed, offset_hours: 6 }
     expected_cost_paise: 0
 """
@@ -54,6 +55,7 @@ def test_the_shipped_playbook_directory_loads() -> None:
     assert playbook.steps[0].channel == Channel.PAYMENT_RETRY
     assert playbook.steps[1].channel == Channel.LINK
     assert playbook.steps[1].timing.after_step == "retry"
+    assert all(step.category == ActionCategory.TRANSACTIONAL for step in playbook.steps)
 
 
 # --- a well-formed directory ---------------------------------------------------
@@ -102,10 +104,27 @@ def test_load_playbooks_rejects_an_unknown_channel(tmp_path: Path) -> None:
         load_playbooks(tmp_path)
 
 
+def test_load_playbooks_rejects_an_unknown_category(tmp_path: Path) -> None:
+    _write(tmp_path, "bad-category.yaml", _VALID_YAML.replace("transactional", "spam"))
+    with pytest.raises(PlaybookLoadError):
+        load_playbooks(tmp_path)
+
+
+def test_load_playbooks_rejects_a_step_missing_category(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "missing-category.yaml",
+        _VALID_YAML.replace("    category: transactional\n", ""),
+    )
+    with pytest.raises(PlaybookLoadError):
+        load_playbooks(tmp_path)
+
+
 def test_load_playbooks_rejects_a_duplicate_step_id(tmp_path: Path) -> None:
     duplicated = _VALID_YAML + (
         "  - id: retry\n"
         "    channel: payment_retry\n"
+        "    category: transactional\n"
         "    timing: { policy: fixed, offset_hours: 1 }\n"
         "    expected_cost_paise: 0\n"
     )
@@ -120,6 +139,7 @@ def test_load_playbooks_rejects_a_relative_step_referencing_an_unknown_step(
     extended = _VALID_YAML + (
         "  - id: follow_up\n"
         "    channel: link\n"
+        "    category: transactional\n"
         "    timing: { policy: relative, after_step: nonexistent, offset_hours: 4 }\n"
         "    expected_cost_paise: 0\n"
     )
@@ -144,10 +164,12 @@ max_case_age_days: 21
 steps:
   - id: follow_up
     channel: link
+    category: transactional
     timing: { policy: relative, after_step: retry, offset_hours: 4 }
     expected_cost_paise: 0
   - id: retry
     channel: payment_retry
+    category: transactional
     timing: { policy: fixed, offset_hours: 6 }
     expected_cost_paise: 0
 """

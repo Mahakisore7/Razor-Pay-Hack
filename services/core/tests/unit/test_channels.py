@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Arm, Case, CaseState
 from recoup.domain.decline import DeclineCategory
 from recoup.domain.identifiers import ActionId, CaseId, SignalId, uuid7
@@ -55,6 +55,7 @@ def _action(
         step_id="step-1",
         attempt=attempt,
         channel=channel,
+        category=ActionCategory.TRANSACTIONAL,
         payload=ActionPayload(variables=variables or {}),
         cost=Money(0, Currency.INR),
         due_at=_CLOCK.now(),

@@ -4,7 +4,7 @@ produce the same key so the duplicate is suppressed."""
 
 import pytest
 
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.identifiers import ActionId, CaseId, uuid7
 from recoup.domain.money import Money
 from tests.factories import EPOCH
@@ -19,6 +19,7 @@ def _make_action(
         step_id=step_id,
         attempt=attempt,
         channel=Channel.PAYMENT_RETRY,
+        category=ActionCategory.TRANSACTIONAL,
         payload=ActionPayload(),
         cost=Money(300),
         due_at=EPOCH,
@@ -44,6 +45,36 @@ def test_idempotency_key_differs_by_step() -> None:
     first = _make_action(case_id=case_id, step_id="timed_retry")
     second = _make_action(case_id=case_id, step_id="payment_link_sms")
     assert first.idempotency_key != second.idempotency_key
+
+
+def test_idempotency_key_is_unaffected_by_category() -> None:
+    """Only `case_id`, `step_id`, and `attempt` may influence the derived
+    key (DOMAIN-MODEL SS7) -- `category` is a policy-time classification,
+    not part of the action's logical identity."""
+    case_id = CaseId(uuid7())
+    transactional = Action(
+        id=ActionId(uuid7()),
+        case_id=case_id,
+        step_id="timed_retry",
+        attempt=1,
+        channel=Channel.SMS,
+        category=ActionCategory.TRANSACTIONAL,
+        payload=ActionPayload(),
+        cost=Money(300),
+        due_at=EPOCH,
+    )
+    promotional = Action(
+        id=ActionId(uuid7()),
+        case_id=case_id,
+        step_id="timed_retry",
+        attempt=1,
+        channel=Channel.SMS,
+        category=ActionCategory.PROMOTIONAL,
+        payload=ActionPayload(),
+        cost=Money(300),
+        due_at=EPOCH,
+    )
+    assert transactional.idempotency_key == promotional.idempotency_key
 
 
 def test_action_rejects_non_positive_attempt() -> None:

@@ -49,10 +49,10 @@ async def persist_plan(
     scheduled_action_id)` pairs in `due_at` order, so a caller can hand
     the first one straight to the scheduler/executor.
 
-    `channel` comes from the *playbook*'s own step declaration --
-    `PlannedStep` (the pure planning result) carries only `step_id`,
-    `due_at`, and `expected_cost`, not a channel, so the playbook is
-    still needed here to resolve one.
+    `channel` and `category` come from the *playbook*'s own step
+    declaration -- `PlannedStep` (the pure planning result) carries only
+    `step_id`, `due_at`, and `expected_cost`, not either, so the playbook
+    is still needed here to resolve them.
     """
     case.transition_to(CaseState.DIAGNOSING)
     case.transition_to(CaseState.PLANNED)
@@ -98,6 +98,7 @@ async def persist_plan(
             step_id=planned.step_id,
             attempt=1,
             channel=playbook_step.channel,
+            category=playbook_step.category,
             payload=payload,
             cost=planned.expected_cost,
             due_at=planned.due_at,

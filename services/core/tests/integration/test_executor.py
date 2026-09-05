@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from testcontainers.community.redis import RedisContainer
 
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Case
 from recoup.domain.decline import DeclineCategory
 from recoup.domain.identifiers import ActionId, SignalId, uuid7
@@ -142,6 +142,7 @@ async def _seed(
         step_id=step_id,
         attempt=attempt,
         channel=channel,
+        category=ActionCategory.TRANSACTIONAL,
         payload=ActionPayload(variables=variables),
         cost=Money(action_cost_paise, Currency.INR),
         due_at=_CLOCK.now(),

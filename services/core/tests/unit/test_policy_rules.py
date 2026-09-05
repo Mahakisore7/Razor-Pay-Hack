@@ -5,7 +5,7 @@ in-memory: no database, no mocking.
 
 from datetime import UTC, date, datetime
 
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Arm, Case, CaseState
 from recoup.domain.consent import ConsentEvent, ConsentSource
 from recoup.domain.decline import DeclineCategory
@@ -14,18 +14,20 @@ from recoup.domain.identifiers import ActionId, CaseId, uuid7
 from recoup.domain.mandate import Frequency, Mandate, MandateRail, MandateStatus
 from recoup.domain.money import Money
 from recoup.domain.policy_decision import Verdict
-from recoup.policy.context import KillSwitchState, PolicyContext
-from recoup.policy.rules import consent, cost_ceiling, domain_guards, kill_switch
+from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
+from recoup.policy.rules import consent, cost_ceiling, dnd, domain_guards, kill_switch
 from tests.factories import make_case, make_customer_ref
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _NO_KILL_SWITCH = KillSwitchState(global_tripped=False, tripped_playbooks=frozenset())
+_NOT_ON_DND = DndStatus(registered=False)
 
 
 def _action(
     *,
     case_id: CaseId,
     channel: Channel = Channel.PAYMENT_RETRY,
+    category: ActionCategory = ActionCategory.TRANSACTIONAL,
     cost: Money = Money(0),
     due_at: datetime = _NOW,
     attempt: int = 1,
@@ -36,6 +38,7 @@ def _action(
         step_id="retry",
         attempt=attempt,
         channel=channel,
+        category=category,
         payload=ActionPayload(),
         cost=cost,
         due_at=due_at,
@@ -47,6 +50,7 @@ def _context(
     case: Case | None = None,
     playbook_id: str = "insufficient-funds",
     consent_events: tuple[ConsentEvent, ...] = (),
+    dnd_status: DndStatus = _NOT_ON_DND,
     mandate: Mandate | None = None,
     kill_switch_state: KillSwitchState = _NO_KILL_SWITCH,
     now: datetime = _NOW,
@@ -56,6 +60,7 @@ def _context(
         case=case if case is not None else make_case(),
         playbook_id=playbook_id,
         consent_events=consent_events,
+        dnd_status=dnd_status,
         mandate=mandate,
         kill_switch=kill_switch_state,
     )
@@ -329,6 +334,52 @@ def test_consent_ignores_a_grant_that_happens_after_due_at() -> None:
     action = _action(case_id=case.id, channel=Channel.SMS, due_at=_NOW)
     decision = consent.evaluate(action, _context(case=case, consent_events=(event,)))
     assert decision is not None
+
+
+# --- R5: DND ---------------------------------------------------------------------
+
+
+def test_dnd_passes_a_transactional_action_when_registered() -> None:
+    """The regulatory carve-out this rule exists for: a customer on the
+    DND registry still receives their transactional notices."""
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS, category=ActionCategory.TRANSACTIONAL)
+    ctx = _context(case=case, dnd_status=DndStatus(registered=True))
+    assert dnd.evaluate(action, ctx) is None
+
+
+def test_dnd_passes_a_promotional_action_when_not_registered() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS, category=ActionCategory.PROMOTIONAL)
+    assert dnd.evaluate(action, _context(case=case, dnd_status=_NOT_ON_DND)) is None
+
+
+def test_dnd_denies_a_promotional_action_when_registered() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS, category=ActionCategory.PROMOTIONAL)
+    ctx = _context(case=case, dnd_status=DndStatus(registered=True))
+    decision = dnd.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "dnd_registered"
+    assert decision.inputs == {"category": "promotional"}
+    assert decision.action_id == action.id
+    assert decision.attempt == action.attempt
+    assert decision.decided_at == _NOW
+
+
+def test_dnd_ignores_channel_entirely() -> None:
+    """R5 reads only `action.category` (POLICY-ENGINE SS3) -- unlike R4,
+    there is no per-channel exemption list; `payment_retry` is denied here
+    just as readily as `sms` would be, if it were ever marked promotional."""
+    case = make_case()
+    action = _action(
+        case_id=case.id, channel=Channel.PAYMENT_RETRY, category=ActionCategory.PROMOTIONAL
+    )
+    ctx = _context(case=case, dnd_status=DndStatus(registered=True))
+    decision = dnd.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "dnd_registered"
 
 
 # --- R8: cost ceiling ---------------------------------------------------------------
