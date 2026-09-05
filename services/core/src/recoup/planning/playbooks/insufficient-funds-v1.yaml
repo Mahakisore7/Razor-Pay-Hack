@@ -17,6 +17,7 @@ steps:
   # A gateway-routed mandate/payment retry (T2.7) -- no messaging spend.
   - id: retry
     channel: payment_retry
+    category: transactional
     timing:
       policy: fixed
       offset_hours: 6
@@ -26,9 +27,12 @@ steps:
       decline_retryable: true
 
   # A Razorpay payment link, gateway-routed like the retry above -- free to
-  # generate, so also modelled at zero expected cost this phase.
+  # generate, so also modelled at zero expected cost this phase. A link to
+  # collect an already-failed payment services an existing transaction, not
+  # marketing -- transactional, same as the retry it follows.
   - id: payment_link
     channel: link
+    category: transactional
     timing:
       policy: relative
       after_step: retry

@@ -98,7 +98,7 @@ from recoup.planning.playbooks.schema import Playbook
 from recoup.planning.repository import persist_plan
 from recoup.platform.clock import FrozenClock
 from recoup.platform.models import BenchRun
-from recoup.policy.context import KillSwitchState, PolicyContext
+from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.engine import evaluate
 from recoup.policy.repository import load_consent_events, persist_decision, record_consent
 
@@ -346,6 +346,13 @@ async def _gate_and_execute(
         case=record.case,
         playbook_id=record.playbook_id,
         consent_events=consent_events,
+        # No DND registry sync exists yet (out of T4.1's scope, same as
+        # the still-permissive kill switch and mandate below) -- every
+        # cohort customer is treated as not registered, so R5 stays a
+        # no-op here until a real sync source lands. Every playbook step
+        # shipped so far is `transactional` anyway (see the playbook
+        # YAMLs' own `category` comments), so R5 would not fire either way.
+        dnd_status=DndStatus(registered=False),
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
     )
@@ -357,12 +364,14 @@ async def _gate_and_execute(
         # merely untested: kill_switch and the mandate check are always
         # permissive here (`KillSwitchState(global_tripped=False, ...)`,
         # `mandate=None`), consent is now seeded for every channel
-        # (this PR's own fix), domain_guards' non-retryable check is
-        # already filtered out at planning time by the playbook's own
-        # `decline_retryable` guard, and cost_ceiling is now kept in
-        # sync with the plan that funded it. Kept, not deleted -- a
-        # future kill-switch/mandate wiring (PHASE-04) makes this a real
-        # path again, and a re-queue is that same phase's own scope.
+        # (T3.6's own fix), dnd_status is always unregistered above (and
+        # every shipped playbook step is `transactional` regardless),
+        # domain_guards' non-retryable check is already filtered out at
+        # planning time by the playbook's own `decline_retryable` guard,
+        # and cost_ceiling is now kept in sync with the plan that funded
+        # it. Kept, not deleted -- a future kill-switch/mandate wiring
+        # (PHASE-04) makes this a real path again, and a re-queue is that
+        # same phase's own scope.
         return  # pragma: no cover
 
     result = await execute(

@@ -18,7 +18,7 @@ from types import MappingProxyType
 from recoup.domain.identifiers import ActionId, CaseId
 from recoup.domain.money import Money
 
-__all__ = ["Action", "ActionPayload", "Channel"]
+__all__ = ["Action", "ActionCategory", "ActionPayload", "Channel"]
 
 
 class Channel(StrEnum):
@@ -29,6 +29,16 @@ class Channel(StrEnum):
     PAYMENT_RETRY = "payment_retry"
     LINK = "link"
     HUMAN_REVIEW = "human_review"
+
+
+class ActionCategory(StrEnum):
+    """POLICY-ENGINE SS3 R5: transactional notifications (a pre-debit
+    notice, a payment receipt) are exempt from DND by regulation;
+    promotional ones are not. Declared by the playbook step that produces
+    the action (schema.py), the same way `channel` is."""
+
+    TRANSACTIONAL = "transactional"
+    PROMOTIONAL = "promotional"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +58,7 @@ class Action:
     step_id: str
     attempt: int
     channel: Channel
+    category: ActionCategory
     idempotency_key: str
     payload: ActionPayload
     cost: Money
@@ -61,6 +72,7 @@ class Action:
         step_id: str,
         attempt: int,
         channel: Channel,
+        category: ActionCategory,
         payload: ActionPayload,
         cost: Money,
         due_at: datetime,
@@ -72,8 +84,13 @@ class Action:
         object.__setattr__(self, "step_id", step_id)
         object.__setattr__(self, "attempt", attempt)
         object.__setattr__(self, "channel", channel)
+        object.__setattr__(self, "category", category)
         object.__setattr__(self, "payload", payload)
         object.__setattr__(self, "cost", cost)
         object.__setattr__(self, "due_at", due_at)
+        # `category` is deliberately not part of the hash (DOMAIN-MODEL SS7):
+        # the same logical action recomputed after a crash must produce the
+        # same key so the duplicate is suppressed, which only holds if
+        # nothing but `case_id`, `step_id`, and `attempt` can influence it.
         key = hashlib.sha256(f"{case_id}|{step_id}|{attempt}".encode()).hexdigest()
         object.__setattr__(self, "idempotency_key", key)

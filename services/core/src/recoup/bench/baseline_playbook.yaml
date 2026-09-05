@@ -32,6 +32,7 @@ steps:
   # stacked on the previous step's own due_at.
   - id: retry_1
     channel: payment_retry
+    category: transactional
     timing:
       policy: fixed
       offset_hours: 1
@@ -44,8 +45,12 @@ steps:
   # category (no diagnosis-driven routing). Costed at METRICS-AND-KPIS
   # SS3.1's own email rate (INR 0.02), not an invented value -- this is
   # the same cost table T3.6's statistics and T3.7's report cite.
+  # Transactional, not promotional (R5): a dunning notice about this
+  # customer's own failed payment services an existing transaction: it
+  # is not marketing.
   - id: dunning_email
     channel: email
+    category: transactional
     timing:
       policy: fixed
       offset_hours: 2
@@ -53,6 +58,7 @@ steps:
 
   - id: retry_2
     channel: payment_retry
+    category: transactional
     timing:
       policy: fixed
       offset_hours: 24
@@ -63,6 +69,7 @@ steps:
 
   - id: retry_3
     channel: payment_retry
+    category: transactional
     timing:
       policy: fixed
       offset_hours: 72

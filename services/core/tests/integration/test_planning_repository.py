@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
 from recoup.diagnosis.engine import stub_diagnose
-from recoup.domain.action import Channel
+from recoup.domain.action import ActionCategory, Channel
 from recoup.domain.case import Arm, Case, CaseState, IllegalTransition
 from recoup.domain.decline import DeclineCategory
 from recoup.domain.identifiers import SignalId, uuid7
@@ -85,6 +85,7 @@ async def test_persist_plan_writes_the_plan_and_its_steps(engine: AsyncEngine) -
 
     assert [action.step_id for action, _ in realised] == ["retry", "payment_link"]
     assert [action.channel for action, _ in realised] == [Channel.PAYMENT_RETRY, Channel.LINK]
+    assert all(action.category == ActionCategory.TRANSACTIONAL for action, _ in realised)
 
     async with sessionmaker() as session:
         plan_row = (

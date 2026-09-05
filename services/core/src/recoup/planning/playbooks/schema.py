@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from recoup.domain.action import Channel
+from recoup.domain.action import ActionCategory, Channel
 from recoup.domain.signal import LeakClass
 
 __all__ = [
@@ -77,6 +77,10 @@ class PlaybookStep(BaseModel):
 
     id: str
     channel: Channel
+    # R5 (POLICY-ENGINE SS3): read straight off the `Action` this step
+    # produces, not defaulted -- a step's author must consciously classify
+    # every message they add, the same way `channel` has no default.
+    category: ActionCategory
     timing: TimingSpec
     # Not in DOMAIN-MODEL SS6.1's illustrative YAML, which shows no per-step
     # cost field even though Plan.total_expected_cost and TR-18's

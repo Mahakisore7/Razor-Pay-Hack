@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.consent import ConsentSource
 from recoup.domain.identifiers import ActionId, CaseId, SignalId, uuid7
 from recoup.domain.money import Currency, Money
@@ -53,6 +53,7 @@ async def _seed_action(sessionmaker: async_sessionmaker[AsyncSession], case_id: 
         step_id="retry",
         attempt=1,
         channel=Channel.PAYMENT_RETRY,
+        category=ActionCategory.TRANSACTIONAL,
         payload=ActionPayload(),
         cost=Money(0, Currency.INR),
         due_at=_CLOCK.now(),

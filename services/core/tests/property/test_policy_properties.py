@@ -1,8 +1,8 @@
 """Property tests for `recoup.policy.engine.evaluate` (T2.5).
 
 POLICY-ENGINE SS6.2's property list (P1-P9) targets the full R1-R11 rule
-set; only a subset is provable against this phase's four rules (kill
-switch, domain guards, consent, cost ceiling):
+set; only a subset is provable against this phase's rules (kill switch,
+domain guards, consent, DND, cost ceiling):
 
 - P1: `evaluate` never raises, for any well-formed action/context, and
   always returns one of the three verdicts.
@@ -26,18 +26,19 @@ from datetime import UTC, datetime, timedelta
 from hypothesis import given
 from hypothesis import strategies as st
 
-from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Arm, CaseState
 from recoup.domain.consent import ConsentEvent, ConsentSource
 from recoup.domain.identifiers import ActionId, CaseId, CustomerRef, uuid7
 from recoup.domain.money import Money
 from recoup.domain.policy_decision import Verdict
-from recoup.policy.context import KillSwitchState, PolicyContext
+from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.engine import evaluate
 from tests.factories import make_case
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _NO_KILL_SWITCH = KillSwitchState(global_tripped=False, tripped_playbooks=frozenset())
+_NOT_ON_DND = DndStatus(registered=False)
 
 _case_states = st.sampled_from(list(CaseState))
 _arms = st.sampled_from(list(Arm))
@@ -52,6 +53,10 @@ def _action(channel: Channel, cost_paise: int, case_id: CaseId) -> Action:
         step_id="retry",
         attempt=1,
         channel=channel,
+        # Every hypothesis-generated action here is transactional --
+        # DND (R5) is only provable, not yet exercised, against the
+        # `category` dimension; that expansion is T4.7's own scope.
+        category=ActionCategory.TRANSACTIONAL,
         payload=ActionPayload(),
         cost=Money(cost_paise),
         due_at=_NOW,
@@ -100,6 +105,7 @@ def test_evaluate_always_returns_exactly_one_verdict_and_never_raises(
         case=case,
         playbook_id="insufficient-funds",
         consent_events=consent_events,
+        dnd_status=_NOT_ON_DND,
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=global_tripped, tripped_playbooks=frozenset()),
     )
@@ -120,6 +126,7 @@ def test_no_consent_at_due_at_never_allows_a_non_exempt_channel(
         case=case,
         playbook_id="insufficient-funds",
         consent_events=(),
+        dnd_status=_NOT_ON_DND,
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
     )
@@ -155,6 +162,7 @@ def test_evaluate_is_deterministic(
         case=case,
         playbook_id="insufficient-funds",
         consent_events=(),
+        dnd_status=_NOT_ON_DND,
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
     )
@@ -188,6 +196,7 @@ def test_an_allow_never_lets_cost_spent_exceed_the_ceiling(
         case=case,
         playbook_id="insufficient-funds",
         consent_events=_granted_consent(case.customer, channel),
+        dnd_status=_NOT_ON_DND,
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
     )
@@ -224,6 +233,7 @@ def test_a_control_arm_case_is_never_allowed(
         case=case,
         playbook_id="insufficient-funds",
         consent_events=_granted_consent(case.customer, channel),
+        dnd_status=_NOT_ON_DND,
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
     )
