@@ -84,6 +84,16 @@ class CaseOutcome:
     outcome_kind: OutcomeKind | None  # None: still open when this was loaded
     reason_code: str | None
     contact_events: tuple[datetime, ...]  # occurred_at of each executed contact-channel action
+    # Both default so every existing hand-built fixture (test_bench_
+    # statistics.py's `_case` helper) keeps compiling unchanged --
+    # `load_case_outcomes` always supplies real values for both. Added
+    # for T3.7's report writer (exception list needs the state a case
+    # was left in when it has no terminal Outcome; per-playbook
+    # breakdown needs which playbook ran it), rather than a second,
+    # near-duplicate query over the same `cases` rows this one already
+    # loads.
+    case_state: str = "unknown"
+    playbook_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +388,8 @@ async def load_case_outcomes(
                 outcome_kind=OutcomeKind(outcome.kind) if outcome else None,
                 reason_code=outcome.reason_code if outcome else None,
                 contact_events=tuple(contacts_by_case.get(row.id, ())),
+                case_state=row.state,
+                playbook_id=row.playbook_id,
             )
         )
     return tuple(results)

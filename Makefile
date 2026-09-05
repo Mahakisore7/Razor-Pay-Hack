@@ -4,6 +4,8 @@
 COMPOSE := docker compose -f infra/docker-compose.yml --project-directory .
 CORE := cd services/core &&
 CONSOLE := cd apps/console &&
+SEED ?= 42
+SIZE ?= 200
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -50,8 +52,8 @@ migrate: ## Apply database migrations
 demo: ## Seed a cohort and run the benchmark (ARCHITECTURE §9)
 	@echo "make demo: seeding and benchmarking ship in Phase 3 -- nothing to do yet."
 
-bench: ## Run the three-arm benchmark (ROADMAP P3)
-	@echo "make bench: the benchmark runner ships in Phase 3 -- nothing to do yet."
+bench: ## Run the three-arm benchmark: make bench SEED=42 SIZE=200 (ROADMAP P3)
+	$(CORE) uv run recoup bench run --seed $(SEED) --size $(SIZE)
 
 clean: ## Remove caches and build artefacts (not containers, volumes, or node_modules)
 	find services/core -type d -name __pycache__ -prune -exec rm -rf {} +

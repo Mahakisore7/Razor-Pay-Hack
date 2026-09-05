@@ -244,6 +244,7 @@ async def _bench_run(seed: int, size: int) -> None:
     from redis.asyncio import Redis
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from recoup.bench.report import write_report
     from recoup.bench.runner import run_benchmark
     from recoup.platform.config import get_settings
 
@@ -260,6 +261,7 @@ async def _bench_run(seed: int, size: int) -> None:
         summary = await run_benchmark(
             sessionmaker, redis, seed=seed, size=size, start_at=_BENCH_START_AT
         )
+        report_dir = await write_report(sessionmaker, run_id=summary.run_id)
     finally:
         await engine.dispose()
         await redis.aclose()
@@ -270,6 +272,7 @@ async def _bench_run(seed: int, size: int) -> None:
     )
     for arm, count in sorted(summary.cases_by_arm.items()):
         typer.echo(f"  {arm}: {count}")
+    typer.echo(f"report written to {report_dir}")
 
 
 def _run_placeholder_process(name: str, poll_interval: float) -> None:
