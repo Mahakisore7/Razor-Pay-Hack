@@ -4,14 +4,14 @@ A rule that touches the database is a rule that cannot be unit-tested or
 exactly replayed from a `PolicyDecision`'s recorded `inputs`.
 
 Scoped to exactly what T2.5/T4.1's rules (kill switch, domain guards,
-consent, DND, quiet hours, frequency cap, cost ceiling, rate limits)
-consume. POLICY-ENGINE SS4's full contract also carries `promise_to_pay`
-and `daily_spend` -- those arrive with the rules that actually read them
-(R2, R8's global cap), in whichever phase builds them, not before.
-Notably absent for the same reason: a `playbook: Playbook` field. None of
-the rules here need more than the playbook's id (R1's per-playbook kill
-switch), and `recoup.planning` sits above `recoup.policy` in the layering
-contract -- policy cannot import it.
+consent, DND, quiet hours, frequency cap, cost ceiling, mandate budget,
+approval threshold, rate limits) consume. POLICY-ENGINE SS4's full
+contract also carries `promise_to_pay` -- that arrives with R2 (stopping
+rules), in whichever phase builds it, not before. Notably absent for the
+same reason: a `playbook: Playbook` field. None of the rules here need
+more than the playbook's id (R1's per-playbook kill switch), and
+`recoup.planning` sits above `recoup.policy` in the layering contract --
+policy cannot import it.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from recoup.domain.case import Case
 from recoup.domain.consent import ConsentEvent
 from recoup.domain.contact import ContactEvent
 from recoup.domain.mandate import Mandate
+from recoup.domain.money import Money
 
 __all__ = ["DndStatus", "KillSwitchState", "PolicyContext"]
 
@@ -75,3 +76,7 @@ class PolicyContext:
     # fresh before `evaluate` is ever called, never inside the rule
     # itself. A channel absent here is unconstrained, not exhausted.
     rate_limit_tokens: Mapping[Channel, int]
+    # R8's global daily cap: total spend across *all* cases today, not
+    # just this one -- the per-case ceiling's own blast-radius backstop
+    # (POLICY-ENGINE SS3).
+    daily_spend: Money

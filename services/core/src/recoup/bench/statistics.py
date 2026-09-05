@@ -24,13 +24,16 @@ the same amount-weighted formula.
 Two metrics METRICS-AND-KPIS SS3.3/SS4 also name -- mandate budget
 efficiency and quiet-hour violations -- are not computed here, on
 purpose: nothing in this codebase yet consumes a mandate's
-representation budget (every playbook's payment_retry step calls
-`retry_payment`, never `present_mandate`; representation accounting is
-POLICY-ENGINE R5, PHASE-04 scope) or enforces quiet hours (R3, same
-phase, and it needs a customer timezone this phase has nowhere to read
-one from). Reporting an invented number for either would be worse than
-reporting none -- both come back `None`, and T3.7's report must say why
-plainly rather than omit them silently.
+representation budget for real (every playbook's payment_retry step
+calls `retry_payment`, never `present_mandate`; T4.1's R9 rule exists and
+is fully tested, but no case anywhere is ever associated with a real
+`Mandate` -- that needs a schema change `mandate_budget.py`'s own
+docstring explains, not this phase's scope) and R6's quiet hours, while
+real and wired into `evaluate` as of T4.1, is kept a deliberate no-op
+against every playbook step shipped so far (`bench/runner.py`'s own
+comment on why). Reporting an invented number for either would be worse
+than reporting none -- both come back `None`, and T3.7's report must say
+why plainly rather than omit them silently.
 """
 
 from __future__ import annotations

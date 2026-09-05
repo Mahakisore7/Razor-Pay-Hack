@@ -211,6 +211,14 @@ async def test_messaging_channel_steps_are_never_denied_no_consent_or_cost_ceili
                     select(PolicyDecisionRow.rule_id)
                     .where(PolicyDecisionRow.action_id.in_(action_ids))
                     .where(PolicyDecisionRow.verdict != "allow")
+                    # R10 (T4.1): a genuinely rare cohort case above the
+                    # approval threshold is a real, correct DEFER this
+                    # seed/size did not happen to draw, but excluded here
+                    # regardless -- this test's own regression concern is
+                    # R4/R8, not R10, and asserting `== []` on the whole
+                    # table would make an unrelated, low-probability draw
+                    # fail a test about a completely different bug.
+                    .where(PolicyDecisionRow.rule_id != "awaiting_approval")
                 )
             )
             .scalars()
