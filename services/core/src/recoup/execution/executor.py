@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoup.audit.events import Actor, AuditKind
 from recoup.audit.repository import record_event
-from recoup.domain.action import Action
+from recoup.domain.action import NON_CONTACT_CHANNELS, Action
 from recoup.domain.case import Case
 from recoup.domain.errors import RecoupError
 from recoup.domain.policy_decision import Verdict
@@ -53,6 +53,7 @@ from recoup.gateway.interface import PaymentGateway
 from recoup.platform.clock import Clock
 from recoup.platform.logging import current_trace_id
 from recoup.platform.models import CaseRow, PolicyDecisionRow
+from recoup.policy.repository import record_contact
 
 __all__ = [
     "ExecutionResult",
@@ -190,6 +191,15 @@ async def execute(
         trace_id=current_trace_id(),
         occurred_at=clock.now(),
     )
+    if action.channel not in NON_CONTACT_CHANNELS:
+        # R7 (POLICY-ENGINE SS3): counted regardless of `result.success` --
+        # an attempted send already reached the customer's phone/inbox,
+        # whatever the channel later reports about delivery. Not written
+        # for a suppressed duplicate (TR-23's own idempotency guard, above)
+        # since the channel never ran a second time for it.
+        await record_contact(
+            session, customer=case.customer, channel=action.channel, occurred_at=clock.now()
+        )
     await session.execute(
         update(CaseRow)
         .where(CaseRow.id == case.id)

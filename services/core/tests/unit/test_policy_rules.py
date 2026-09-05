@@ -3,11 +3,15 @@ each is a pure function of `(action, ctx)`, so every case here is
 in-memory: no database, no mocking.
 """
 
-from datetime import UTC, date, datetime
+from collections.abc import Mapping
+from datetime import UTC, date, datetime, timedelta
+from types import MappingProxyType
+from zoneinfo import ZoneInfo
 
 from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Arm, Case, CaseState
 from recoup.domain.consent import ConsentEvent, ConsentSource
+from recoup.domain.contact import ContactEvent
 from recoup.domain.decline import DeclineCategory
 from recoup.domain.diagnosis import Diagnosis, DiagnosisMethod, Hypothesis, RootCause
 from recoup.domain.identifiers import ActionId, CaseId, uuid7
@@ -15,12 +19,23 @@ from recoup.domain.mandate import Frequency, Mandate, MandateRail, MandateStatus
 from recoup.domain.money import Money
 from recoup.domain.policy_decision import Verdict
 from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
-from recoup.policy.rules import consent, cost_ceiling, dnd, domain_guards, kill_switch
+from recoup.policy.rules import (
+    consent,
+    cost_ceiling,
+    dnd,
+    domain_guards,
+    frequency_cap,
+    kill_switch,
+    quiet_hours,
+    rate_limit,
+)
 from tests.factories import make_case, make_customer_ref
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _NO_KILL_SWITCH = KillSwitchState(global_tripped=False, tripped_playbooks=frozenset())
 _NOT_ON_DND = DndStatus(registered=False)
+_UTC = ZoneInfo("UTC")
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 def _action(
@@ -51,8 +66,11 @@ def _context(
     playbook_id: str = "insufficient-funds",
     consent_events: tuple[ConsentEvent, ...] = (),
     dnd_status: DndStatus = _NOT_ON_DND,
+    customer_timezone: ZoneInfo = _UTC,
+    contact_history: tuple[ContactEvent, ...] = (),
     mandate: Mandate | None = None,
     kill_switch_state: KillSwitchState = _NO_KILL_SWITCH,
+    rate_limit_tokens: Mapping[Channel, int] = MappingProxyType({}),
     now: datetime = _NOW,
 ) -> PolicyContext:
     return PolicyContext(
@@ -61,8 +79,11 @@ def _context(
         playbook_id=playbook_id,
         consent_events=consent_events,
         dnd_status=dnd_status,
+        customer_timezone=customer_timezone,
+        contact_history=contact_history,
         mandate=mandate,
         kill_switch=kill_switch_state,
+        rate_limit_tokens=rate_limit_tokens,
     )
 
 
@@ -380,6 +401,255 @@ def test_dnd_ignores_channel_entirely() -> None:
     decision = dnd.evaluate(action, ctx)
     assert decision is not None
     assert decision.rule_id == "dnd_registered"
+
+
+# --- R6: quiet hours ---------------------------------------------------------------
+
+
+def test_quiet_hours_exempts_payment_retry_link_and_email() -> None:
+    """None of the three is a message a customer perceives at a time of
+    day at all (payment_retry/link: not contact; email: asynchronous) --
+    `_NOW` (midnight UTC) is deep inside the forbidden window, so this
+    would fail for any non-exempt channel."""
+    case = make_case()
+    for channel in (Channel.PAYMENT_RETRY, Channel.LINK, Channel.EMAIL):
+        action = _action(case_id=case.id, channel=channel)
+        assert quiet_hours.evaluate(action, _context(case=case)) is None
+
+
+def test_quiet_hours_allows_sms_inside_the_default_window() -> None:
+    case = make_case()
+    noon_utc = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=noon_utc)
+    ctx = _context(case=case, now=noon_utc)
+    assert quiet_hours.evaluate(action, ctx) is None
+
+
+def test_quiet_hours_allows_sms_exactly_at_the_windows_open() -> None:
+    case = make_case()
+    at_open = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)  # half-open [start, end)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=at_open)
+    ctx = _context(case=case, now=at_open)
+    assert quiet_hours.evaluate(action, ctx) is None
+
+
+def test_quiet_hours_defers_sms_exactly_at_the_windows_close() -> None:
+    case = make_case()
+    at_close = datetime(2026, 1, 1, 21, 0, tzinfo=UTC)  # half-open [start, end)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=at_close)
+    ctx = _context(case=case, now=at_close)
+    decision = quiet_hours.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "quiet_hours"
+
+
+def test_quiet_hours_defers_sms_before_the_window_opens_to_later_today() -> None:
+    case = make_case()
+    early = datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=early)
+    ctx = _context(case=case, now=early)
+    decision = quiet_hours.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DEFER
+    assert decision.rule_id == "quiet_hours"
+    assert decision.defer_until == datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    assert decision.decided_at == early
+
+
+def test_quiet_hours_defers_sms_after_the_window_closes_to_tomorrow() -> None:
+    case = make_case()
+    late = datetime(2026, 1, 1, 22, 0, tzinfo=UTC)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=late)
+    ctx = _context(case=case, now=late)
+    decision = quiet_hours.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.defer_until == datetime(2026, 1, 2, 9, 0, tzinfo=UTC)
+
+
+def test_quiet_hours_is_evaluated_in_the_customers_own_timezone() -> None:
+    """The same UTC instant is inside the window in one timezone and
+    outside it in another (P3, POLICY-ENGINE SS6.2: "for any timezone") --
+    05:00 UTC is 10:30 IST (allowed) but 21:00 the previous day in US
+    Pacific, standard time in January (forbidden, exactly at the close)."""
+    case = make_case()
+    instant = datetime(2026, 1, 1, 5, 0, tzinfo=UTC)  # 10:30 IST, 21:00 Pacific (prev day)
+    action = _action(case_id=case.id, channel=Channel.SMS, due_at=instant)
+
+    ist_ctx = _context(case=case, now=instant, customer_timezone=_IST)
+    pacific_ctx = _context(
+        case=case, now=instant, customer_timezone=ZoneInfo("America/Los_Angeles")
+    )
+
+    assert quiet_hours.evaluate(action, ist_ctx) is None
+    pacific_decision = quiet_hours.evaluate(action, pacific_ctx)
+    assert pacific_decision is not None
+    assert pacific_decision.rule_id == "quiet_hours"
+
+
+def test_quiet_hours_gives_voice_a_stricter_window_than_the_default() -> None:
+    """09:30 is inside SMS's default window (09:00-21:00) but before
+    voice's own, later-opening one (10:00-19:00)."""
+    case = make_case()
+    at_0930 = datetime(2026, 1, 1, 9, 30, tzinfo=UTC)
+    sms_action = _action(case_id=case.id, channel=Channel.SMS, due_at=at_0930)
+    voice_action = _action(case_id=case.id, channel=Channel.VOICE, due_at=at_0930)
+    ctx = _context(case=case, now=at_0930)
+
+    assert quiet_hours.evaluate(sms_action, ctx) is None
+    voice_decision = quiet_hours.evaluate(voice_action, ctx)
+    assert voice_decision is not None
+    assert voice_decision.rule_id == "quiet_hours"
+    assert voice_decision.defer_until == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+
+
+# --- R7: frequency cap ---------------------------------------------------------------
+
+
+def test_frequency_cap_exempts_payment_retry_and_link() -> None:
+    case = make_case()
+    history = tuple(
+        ContactEvent(customer=case.customer, channel=Channel.SMS, occurred_at=_NOW)
+        for _ in range(10)
+    )
+    for channel in (Channel.PAYMENT_RETRY, Channel.LINK):
+        action = _action(case_id=case.id, channel=channel)
+        assert frequency_cap.evaluate(action, _context(case=case, contact_history=history)) is None
+
+
+def test_frequency_cap_allows_with_no_prior_contact() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    assert frequency_cap.evaluate(action, _context(case=case)) is None
+
+
+def test_frequency_cap_denies_a_second_sms_within_24h_per_channel_cap() -> None:
+    case = make_case()
+    prior = ContactEvent(customer=case.customer, channel=Channel.SMS, occurred_at=_NOW)
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    ctx = _context(case=case, contact_history=(prior,), now=_NOW + timedelta(hours=1))
+    decision = frequency_cap.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DEFER
+    assert decision.rule_id == "frequency_cap"
+    assert decision.inputs["scope"] == "per_channel_24h"
+    assert decision.defer_until == _NOW + timedelta(hours=24)
+
+
+def test_frequency_cap_allows_a_second_sms_once_24h_has_elapsed() -> None:
+    case = make_case()
+    prior = ContactEvent(customer=case.customer, channel=Channel.SMS, occurred_at=_NOW)
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    ctx = _context(case=case, contact_history=(prior,), now=_NOW + timedelta(hours=24))
+    assert frequency_cap.evaluate(action, ctx) is None
+
+
+def test_frequency_cap_denies_a_different_channel_at_the_all_channels_7d_cap() -> None:
+    """Three prior contacts on three different channels -- none of them
+    trips the per-channel-24h cap on their own, but a fourth on a fourth
+    channel still hits the "all channels, rolling 7d" cap of three."""
+    case = make_case()
+    history = (
+        ContactEvent(customer=case.customer, channel=Channel.SMS, occurred_at=_NOW),
+        ContactEvent(customer=case.customer, channel=Channel.EMAIL, occurred_at=_NOW),
+        ContactEvent(customer=case.customer, channel=Channel.WHATSAPP, occurred_at=_NOW),
+    )
+    action = _action(case_id=case.id, channel=Channel.VOICE)
+    ctx = _context(case=case, contact_history=history, now=_NOW + timedelta(days=1))
+    decision = frequency_cap.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.inputs["scope"] == "all_channels_7d"
+    assert decision.defer_until == _NOW + timedelta(days=7)
+
+
+def test_frequency_cap_allows_the_third_contact_within_the_all_channels_cap() -> None:
+    """Exactly at the cap boundary (T4.8's own philosophy): two prior
+    contacts is still under the cap of three, so a third is allowed."""
+    case = make_case()
+    history = (
+        ContactEvent(customer=case.customer, channel=Channel.SMS, occurred_at=_NOW),
+        ContactEvent(customer=case.customer, channel=Channel.EMAIL, occurred_at=_NOW),
+    )
+    action = _action(case_id=case.id, channel=Channel.WHATSAPP)
+    ctx = _context(case=case, contact_history=history, now=_NOW + timedelta(days=1))
+    assert frequency_cap.evaluate(action, ctx) is None
+
+
+def test_frequency_cap_denies_a_second_voice_call_within_its_own_7d_cap() -> None:
+    """Voice's cap (1 per 7d) is stricter than the default per-channel-24h
+    cap alone would imply -- a call from 2 days ago is already outside
+    the 24h window but still active against voice's own 7-day one."""
+    case = make_case()
+    prior = ContactEvent(customer=case.customer, channel=Channel.VOICE, occurred_at=_NOW)
+    action = _action(case_id=case.id, channel=Channel.VOICE)
+    ctx = _context(case=case, contact_history=(prior,), now=_NOW + timedelta(days=2))
+    decision = frequency_cap.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.inputs["scope"] == "voice_7d"
+    assert decision.defer_until == _NOW + timedelta(days=7)
+
+
+def test_frequency_cap_allows_a_second_voice_call_once_7d_has_elapsed() -> None:
+    case = make_case()
+    prior = ContactEvent(customer=case.customer, channel=Channel.VOICE, occurred_at=_NOW)
+    action = _action(case_id=case.id, channel=Channel.VOICE)
+    ctx = _context(case=case, contact_history=(prior,), now=_NOW + timedelta(days=7))
+    assert frequency_cap.evaluate(action, ctx) is None
+
+
+def test_frequency_cap_is_counted_across_cases_not_per_case() -> None:
+    """`ContactEvent` carries no `case_id` at all (domain/contact.py) --
+    the rule cannot distinguish "this case" from "another case for the
+    same customer" even if it wanted to, which is the point (POLICY-ENGINE
+    SS3: counted across all cases for that customer, not per case)."""
+    case_one = make_case()
+    case_two = make_case()
+    # Same customer, two different cases -- deliberately overwritten so
+    # `ContactEvent`'s own customer, not either case's, is what R7 sees.
+    prior = ContactEvent(customer=case_one.customer, channel=Channel.SMS, occurred_at=_NOW)
+    action = _action(case_id=case_two.id, channel=Channel.SMS)
+    ctx = _context(case=case_two, contact_history=(prior,), now=_NOW + timedelta(hours=1))
+    decision = frequency_cap.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "frequency_cap"
+
+
+# --- R11: rate limits ----------------------------------------------------------------
+
+
+def test_rate_limit_allows_a_channel_with_tokens_remaining() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    ctx = _context(case=case, rate_limit_tokens={Channel.SMS: 5})
+    assert rate_limit.evaluate(action, ctx) is None
+
+
+def test_rate_limit_allows_a_channel_absent_from_the_mapping() -> None:
+    """Missing throughput data is unconstrained, not exhausted -- this
+    rule's own docstring."""
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    ctx = _context(case=case, rate_limit_tokens={})
+    assert rate_limit.evaluate(action, ctx) is None
+
+
+def test_rate_limit_defers_a_channel_with_zero_tokens_remaining() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.SMS)
+    ctx = _context(case=case, rate_limit_tokens={Channel.SMS: 0}, now=_NOW)
+    decision = rate_limit.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DEFER
+    assert decision.rule_id == "rate_limited"
+    assert decision.inputs == {"channel": "sms", "tokens_remaining": 0}
+    assert decision.defer_until == _NOW + timedelta(minutes=1)
+    assert decision.decided_at == _NOW
+
+
+def test_rate_limit_does_not_affect_a_different_channels_tokens() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, channel=Channel.WHATSAPP)
+    ctx = _context(case=case, rate_limit_tokens={Channel.SMS: 0})
+    assert rate_limit.evaluate(action, ctx) is None
 
 
 # --- R8: cost ceiling ---------------------------------------------------------------

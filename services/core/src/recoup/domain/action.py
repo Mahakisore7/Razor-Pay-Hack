@@ -18,7 +18,7 @@ from types import MappingProxyType
 from recoup.domain.identifiers import ActionId, CaseId
 from recoup.domain.money import Money
 
-__all__ = ["Action", "ActionCategory", "ActionPayload", "Channel"]
+__all__ = ["NON_CONTACT_CHANNELS", "Action", "ActionCategory", "ActionPayload", "Channel"]
 
 
 class Channel(StrEnum):
@@ -29,6 +29,16 @@ class Channel(StrEnum):
     PAYMENT_RETRY = "payment_retry"
     LINK = "link"
     HUMAN_REVIEW = "human_review"
+
+
+# `payment_retry` is a machine-to-machine gateway re-presentation and
+# `link` only generates a Razorpay payment link without delivering it
+# (execution/channels/link.py) -- neither one is a message a customer
+# perceives, so neither is "contact" for any policy rule keyed on that
+# question (consent, DND, quiet hours, frequency cap). Shared here since
+# R4/R7 and the executor's contact-history writer all need the identical
+# set kept in sync.
+NON_CONTACT_CHANNELS: frozenset[Channel] = frozenset({Channel.PAYMENT_RETRY, Channel.LINK})
 
 
 class ActionCategory(StrEnum):

@@ -67,6 +67,7 @@ import itertools
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -106,6 +107,10 @@ __all__ = ["BenchmarkRunSummary", "run_benchmark"]
 
 _WORKER_ID = "bench-runner"
 _CLAIM_BATCH_SIZE = 200
+# R6 (quiet hours): no per-customer timezone data exists yet -- see
+# `_gate_and_execute`'s own comment for why IST is a safe, provably-inert
+# default against every playbook step shipped so far.
+_DEFAULT_CUSTOMER_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,8 +358,29 @@ async def _gate_and_execute(
         # shipped so far is `transactional` anyway (see the playbook
         # YAMLs' own `category` comments), so R5 would not fire either way.
         dnd_status=DndStatus(registered=False),
+        # R6 (quiet hours): no per-customer geo/phone-based timezone
+        # inference exists yet, so every cohort customer defaults to IST,
+        # Razorpay's primary market. Every playbook step shipped so far is
+        # `payment_retry`, `link`, or `email` -- all three exempt from R6
+        # (quiet_hours.py's own docstring) -- so this default is
+        # provably a no-op today, the same shape as `dnd_status` above.
+        customer_timezone=_DEFAULT_CUSTOMER_TIMEZONE,
+        # R7 (frequency cap): `execution.executor.execute` now writes real
+        # contact history (this PR's own T4.1 addition), but reading it
+        # back here would let quiet-hours-shaped DEFER verdicts reach a
+        # runner with no re-queue mechanism for one yet -- a deferred
+        # action would simply vanish (see the `pragma: no cover` comment
+        # below), not be rescheduled. `()` keeps this rule provably
+        # permissive until that re-queue exists; wiring a live read is
+        # follow-up work, not this PR's own scope.
+        contact_history=(),
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
+        # R11 (rate limits): no live token bucket exists yet (this rule's
+        # own docstring) -- an empty mapping treats every channel as
+        # unconstrained, matching kill_switch/dnd_status's own "no real
+        # backing source yet" default.
+        rate_limit_tokens={},
     )
     decision = evaluate(record.action, ctx)
     await persist_decision(session, clock, case_id=record.case.id, decision=decision)
@@ -366,12 +392,16 @@ async def _gate_and_execute(
         # `mandate=None`), consent is now seeded for every channel
         # (T3.6's own fix), dnd_status is always unregistered above (and
         # every shipped playbook step is `transactional` regardless),
-        # domain_guards' non-retryable check is already filtered out at
-        # planning time by the playbook's own `decline_retryable` guard,
-        # and cost_ceiling is now kept in sync with the plan that funded
-        # it. Kept, not deleted -- a future kill-switch/mandate wiring
-        # (PHASE-04) makes this a real path again, and a re-queue is that
-        # same phase's own scope.
+        # quiet_hours is exempt for every shipped step's channel
+        # regardless of the IST default above, frequency_cap can never
+        # breach against an empty `contact_history`, rate_limit can never
+        # breach against an empty `rate_limit_tokens`, domain_guards'
+        # non-retryable check is already filtered out at planning time by
+        # the playbook's own `decline_retryable` guard, and cost_ceiling
+        # is now kept in sync with the plan that funded it. Kept, not
+        # deleted -- a future kill-switch/mandate/DEFER-requeue wiring
+        # (PHASE-04) makes this a real path again, and that requeue is
+        # that same future work's own scope.
         return  # pragma: no cover
 
     result = await execute(

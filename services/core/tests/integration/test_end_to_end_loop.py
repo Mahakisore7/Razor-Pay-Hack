@@ -30,6 +30,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -186,8 +187,11 @@ async def _gate_and_execute(
         playbook_id=playbook_id,
         consent_events=(),
         dnd_status=DndStatus(registered=False),
+        customer_timezone=ZoneInfo("Asia/Kolkata"),
+        contact_history=(),
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
+        rate_limit_tokens={},
     )
     for row in claimed:
         action = actions_by_scheduled_id[row.id]

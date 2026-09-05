@@ -1,8 +1,9 @@
 """Property tests for `recoup.policy.engine.evaluate` (T2.5).
 
 POLICY-ENGINE SS6.2's property list (P1-P9) targets the full R1-R11 rule
-set; only a subset is provable against this phase's rules (kill switch,
-domain guards, consent, DND, cost ceiling):
+set; only a subset is provable against the rules that exist as of this
+file's own last edit (kill switch, domain guards, consent, DND, quiet
+hours, frequency cap, cost ceiling, rate limits):
 
 - P1: `evaluate` never raises, for any well-formed action/context, and
   always returns one of the three verdicts.
@@ -13,15 +14,21 @@ domain guards, consent, DND, cost ceiling):
 - A control-arm invariant standing in for P9: a control-arm case is never
   ALLOWed, for any other input this phase's rules can vary.
 
-P3 (quiet hours), P5 (mandate concurrency), P6 (stopping rules), P7
-(frequency cap), and the full P9 (zero *executed* actions -- an
-executor-level claim) all need rules or components this phase does not
-build; they land with whichever phase actually builds them.
+Every hypothesis-generated action here is `transactional`, with a fixed
+`customer_timezone` and an empty `contact_history`/`rate_limit_tokens` --
+DND, quiet hours, frequency cap, and rate limits exist as real rules
+(T4.1) but are not yet exercised across *their own* dimensions (category,
+timezone, prior contacts, token counts). The full P3 (quiet hours, any
+timezone), P5 (mandate concurrency), P6 (stopping rules), P7 (frequency
+cap across cases), and P9 (zero *executed* actions -- an executor-level
+claim) are `test/policy-property-invariants`' own scope (T4.7), once
+every rule they need exists.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -39,6 +46,7 @@ from tests.factories import make_case
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _NO_KILL_SWITCH = KillSwitchState(global_tripped=False, tripped_playbooks=frozenset())
 _NOT_ON_DND = DndStatus(registered=False)
+_UTC = ZoneInfo("UTC")
 
 _case_states = st.sampled_from(list(CaseState))
 _arms = st.sampled_from(list(Arm))
@@ -106,8 +114,11 @@ def test_evaluate_always_returns_exactly_one_verdict_and_never_raises(
         playbook_id="insufficient-funds",
         consent_events=consent_events,
         dnd_status=_NOT_ON_DND,
+        customer_timezone=_UTC,
+        contact_history=(),
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=global_tripped, tripped_playbooks=frozenset()),
+        rate_limit_tokens={},
     )
 
     decision = evaluate(action, ctx)
@@ -127,8 +138,11 @@ def test_no_consent_at_due_at_never_allows_a_non_exempt_channel(
         playbook_id="insufficient-funds",
         consent_events=(),
         dnd_status=_NOT_ON_DND,
+        customer_timezone=_UTC,
+        contact_history=(),
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
+        rate_limit_tokens={},
     )
 
     decision = evaluate(action, ctx)
@@ -163,8 +177,11 @@ def test_evaluate_is_deterministic(
         playbook_id="insufficient-funds",
         consent_events=(),
         dnd_status=_NOT_ON_DND,
+        customer_timezone=_UTC,
+        contact_history=(),
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
+        rate_limit_tokens={},
     )
 
     assert evaluate(action, ctx) == evaluate(action, ctx)
@@ -197,8 +214,11 @@ def test_an_allow_never_lets_cost_spent_exceed_the_ceiling(
         playbook_id="insufficient-funds",
         consent_events=_granted_consent(case.customer, channel),
         dnd_status=_NOT_ON_DND,
+        customer_timezone=_UTC,
+        contact_history=(),
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
+        rate_limit_tokens={},
     )
 
     decision = evaluate(action, ctx)
@@ -234,8 +254,11 @@ def test_a_control_arm_case_is_never_allowed(
         playbook_id="insufficient-funds",
         consent_events=_granted_consent(case.customer, channel),
         dnd_status=_NOT_ON_DND,
+        customer_timezone=_UTC,
+        contact_history=(),
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
+        rate_limit_tokens={},
     )
 
     decision = evaluate(action, ctx)

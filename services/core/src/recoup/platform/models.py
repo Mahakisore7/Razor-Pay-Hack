@@ -120,11 +120,11 @@ class ConsentEventRow(Base, _CreatedAtMixin):
     )
 
 
-class ContactEvent(Base, _CreatedAtMixin):
-    """Every outbound contact, independent of consent -- what a frequency
-    cap counts against. Minimal: the code that writes and reads this table
-    (execution's channel adapters, the policy engine's frequency-cap rule)
-    is Phase 2+ work; this is the schema it will need."""
+class ContactEventRow(Base, _CreatedAtMixin):
+    """Every outbound contact, independent of consent -- what R7's
+    frequency-cap rule counts against (POLICY-ENGINE SS3, T4.1). Written by
+    `execution.executor.execute` on every real, non-exempt-channel send;
+    read by `policy.repository.load_contact_history`."""
 
     __tablename__ = "contact_events"
 
