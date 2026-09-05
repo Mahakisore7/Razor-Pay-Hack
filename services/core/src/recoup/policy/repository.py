@@ -11,17 +11,20 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from recoup.audit.events import Actor, AuditKind
 from recoup.audit.repository import record_event
-from recoup.domain.identifiers import CaseId
+from recoup.domain.action import Channel
+from recoup.domain.consent import ConsentEvent, ConsentSource
+from recoup.domain.identifiers import CaseId, CustomerRef
 from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.platform.clock import Clock
 from recoup.platform.logging import current_trace_id
-from recoup.platform.models import PolicyDecisionRow
+from recoup.platform.models import ConsentEventRow, PolicyDecisionRow
 
-__all__ = ["persist_decision"]
+__all__ = ["load_consent_events", "persist_decision", "record_consent"]
 
 
 async def persist_decision(
@@ -87,3 +90,58 @@ async def persist_decision(
             trace_id=trace_id,
             occurred_at=occurred_at,
         )
+
+
+async def record_consent(
+    session: AsyncSession,
+    *,
+    customer: CustomerRef,
+    channel: Channel,
+    granted: bool,
+    source: ConsentSource,
+    occurred_at: datetime,
+) -> None:
+    """Appends one row to the consent ledger (DATA-MODEL SS3.4). No audit
+    event of its own: I4/POLICY_EVALUATED already covers what a policy
+    *decision* did with consent at the moment it mattered -- the grant/
+    revoke event itself is `consent_events`' own record, not an action
+    outcome.
+    """
+    session.add(
+        ConsentEventRow(
+            id=uuid.uuid4(),
+            customer_id=uuid.UUID(customer.id),
+            channel=channel.value,
+            granted=granted,
+            source=source.value,
+            occurred_at=occurred_at,
+        )
+    )
+
+
+async def load_consent_events(
+    session: AsyncSession, customer: CustomerRef
+) -> tuple[ConsentEvent, ...]:
+    """The customer's whole consent ledger, unfolded -- `domain.consent.
+    consent_at` does the point-in-time folding a `PolicyContext` actually
+    needs; this just hands it the raw rows.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(ConsentEventRow).where(ConsentEventRow.customer_id == uuid.UUID(customer.id))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(
+        ConsentEvent(
+            customer=customer,
+            channel=Channel(row.channel),
+            granted=row.granted,
+            source=ConsentSource(row.source),
+            occurred_at=row.occurred_at,
+        )
+        for row in rows
+    )

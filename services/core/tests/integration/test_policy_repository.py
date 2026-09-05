@@ -12,13 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
 from recoup.domain.action import Action, ActionPayload, Channel
+from recoup.domain.consent import ConsentSource
 from recoup.domain.identifiers import ActionId, CaseId, SignalId, uuid7
 from recoup.domain.money import Currency, Money
 from recoup.domain.policy_decision import PolicyDecision, Verdict
 from recoup.domain.signal import LeakClass, Signal, SignalContext
 from recoup.platform.clock import FrozenClock
 from recoup.platform.models import ActionRow, AuditEventRow, PolicyDecisionRow
-from recoup.policy.repository import persist_decision
+from recoup.policy.repository import load_consent_events, persist_decision, record_consent
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -192,3 +193,73 @@ async def test_persist_decision_writes_a_defer_with_its_own_extra_event(
 
     assert row.defer_until == defer_until
     assert [row.kind for row in audit][-2:] == ["policy_evaluated", "policy_deferred"]
+
+
+# --- consent (T3.6 regression coverage for the runner's own fix) ------------
+
+
+async def test_load_consent_events_is_empty_for_a_customer_with_no_ledger(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_consent_repo_empty")
+        await session.commit()
+
+    async with sessionmaker() as session:
+        events = await load_consent_events(session, customer)
+    assert events == ()
+
+
+async def test_record_consent_then_load_round_trips(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        customer = await resolve_customer(session, "cust_consent_repo_roundtrip")
+        await record_consent(
+            session,
+            customer=customer,
+            channel=Channel.EMAIL,
+            granted=True,
+            source=ConsentSource.CHECKOUT,
+            occurred_at=_CLOCK.now(),
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        events = await load_consent_events(session, customer)
+    assert len(events) == 1
+    assert events[0].channel is Channel.EMAIL
+    assert events[0].granted is True
+    assert events[0].source is ConsentSource.CHECKOUT
+    assert events[0].occurred_at == _CLOCK.now()
+
+
+async def test_load_consent_events_only_returns_the_given_customers_own_events(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as session:
+        this_customer = await resolve_customer(session, "cust_consent_repo_mine")
+        other_customer = await resolve_customer(session, "cust_consent_repo_not_mine")
+        await record_consent(
+            session,
+            customer=this_customer,
+            channel=Channel.SMS,
+            granted=True,
+            source=ConsentSource.CHECKOUT,
+            occurred_at=_CLOCK.now(),
+        )
+        await record_consent(
+            session,
+            customer=other_customer,
+            channel=Channel.SMS,
+            granted=True,
+            source=ConsentSource.CHECKOUT,
+            occurred_at=_CLOCK.now(),
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        events = await load_consent_events(session, this_customer)
+    assert len(events) == 1
+    assert events[0].customer.id == this_customer.id
