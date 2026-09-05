@@ -77,6 +77,42 @@ def test_idempotency_key_is_unaffected_by_category() -> None:
     assert transactional.idempotency_key == promotional.idempotency_key
 
 
+def test_action_consumes_mandate_budget_defaults_to_false() -> None:
+    """Mirrors `PlaybookStep.consumes_mandate_budget`'s own default --
+    most steps do not touch a mandate's representation budget."""
+    action = _make_action()
+    assert action.consumes_mandate_budget is False
+
+
+def test_idempotency_key_is_unaffected_by_consumes_mandate_budget() -> None:
+    case_id = CaseId(uuid7())
+    non_consuming = Action(
+        id=ActionId(uuid7()),
+        case_id=case_id,
+        step_id="timed_retry",
+        attempt=1,
+        channel=Channel.PAYMENT_RETRY,
+        category=ActionCategory.TRANSACTIONAL,
+        payload=ActionPayload(),
+        cost=Money(300),
+        due_at=EPOCH,
+        consumes_mandate_budget=False,
+    )
+    consuming = Action(
+        id=ActionId(uuid7()),
+        case_id=case_id,
+        step_id="timed_retry",
+        attempt=1,
+        channel=Channel.PAYMENT_RETRY,
+        category=ActionCategory.TRANSACTIONAL,
+        payload=ActionPayload(),
+        cost=Money(300),
+        due_at=EPOCH,
+        consumes_mandate_budget=True,
+    )
+    assert non_consuming.idempotency_key == consuming.idempotency_key
+
+
 def test_action_rejects_non_positive_attempt() -> None:
     with pytest.raises(ValueError, match="attempt"):
         _make_action(attempt=0)

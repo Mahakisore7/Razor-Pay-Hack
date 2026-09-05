@@ -414,8 +414,10 @@ def render_markdown(report: BenchmarkReport) -> str:
         ),
         f"- Net incremental value: {_format_money(e.net_incremental_value)}",
         "- ROI: " + (f"{e.roi:.2%}" if e.roi is not None else "n/a"),
-        "- Mandate budget efficiency: not measurable this phase (no playbook step calls "
-        "present_mandate yet -- POLICY-ENGINE R5, PHASE-04 scope)",
+        "- Mandate budget efficiency: not measurable this run (no playbook step calls "
+        "present_mandate yet, and no case is associated with a real Mandate -- "
+        "POLICY-ENGINE R9 exists and is tested, but needs a schema change out of "
+        "this phase's scope; see policy.rules.mandate_budget's own docstring)",
         "",
     ]
 
@@ -426,8 +428,9 @@ def render_markdown(report: BenchmarkReport) -> str:
         "",
         f"- Contact fatigue index: {g.contact_fatigue_index:.2f} (guardrail: <= 2.0)",
         f"- Opt-out rate: {_format_pct(g.opt_out_rate)} (guardrail: <= 1.5%)",
-        "- Quiet-hour violations: not measurable this phase (no quiet-hours rule wired yet -- "
-        "POLICY-ENGINE R3, PHASE-04 scope; not asserted as zero)",
+        "- Quiet-hour violations: not measurable this run (POLICY-ENGINE R6 is wired into "
+        "`evaluate` as of T4.1, but is a deliberate no-op against every playbook step "
+        "shipped so far -- see bench.runner's own comment on why; not asserted as zero)",
         "",
     ]
 

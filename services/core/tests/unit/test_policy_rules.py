@@ -20,12 +20,14 @@ from recoup.domain.money import Money
 from recoup.domain.policy_decision import Verdict
 from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.rules import (
+    approval_threshold,
     consent,
     cost_ceiling,
     dnd,
     domain_guards,
     frequency_cap,
     kill_switch,
+    mandate_budget,
     quiet_hours,
     rate_limit,
 )
@@ -46,6 +48,7 @@ def _action(
     cost: Money = Money(0),
     due_at: datetime = _NOW,
     attempt: int = 1,
+    consumes_mandate_budget: bool = False,
 ) -> Action:
     return Action(
         id=ActionId(uuid7()),
@@ -57,6 +60,7 @@ def _action(
         payload=ActionPayload(),
         cost=cost,
         due_at=due_at,
+        consumes_mandate_budget=consumes_mandate_budget,
     )
 
 
@@ -71,6 +75,7 @@ def _context(
     mandate: Mandate | None = None,
     kill_switch_state: KillSwitchState = _NO_KILL_SWITCH,
     rate_limit_tokens: Mapping[Channel, int] = MappingProxyType({}),
+    daily_spend: Money = Money(0),
     now: datetime = _NOW,
 ) -> PolicyContext:
     return PolicyContext(
@@ -84,6 +89,7 @@ def _context(
         mandate=mandate,
         kill_switch=kill_switch_state,
         rate_limit_tokens=rate_limit_tokens,
+        daily_spend=daily_spend,
     )
 
 
@@ -108,6 +114,8 @@ def _mandate(
     max_amount: Money = Money(500_000),
     valid_from: date = date(2025, 1, 1),
     valid_until: date = date(2027, 1, 1),
+    representations_used_this_cycle: int = 0,
+    representation_cap: int = 4,
 ) -> Mandate:
     return Mandate(
         id="mandate_test",
@@ -118,8 +126,8 @@ def _mandate(
         valid_from=valid_from,
         valid_until=valid_until,
         status=MandateStatus.ACTIVE,
-        representations_used_this_cycle=0,
-        representation_cap=4,
+        representations_used_this_cycle=representations_used_this_cycle,
+        representation_cap=representation_cap,
     )
 
 
@@ -678,3 +686,124 @@ def test_cost_ceiling_denies_a_cost_that_would_exceed_the_ceiling() -> None:
         "action_cost_paise": 11,
         "cost_ceiling_paise": 100,
     }
+
+
+def test_cost_ceiling_allows_a_cost_within_the_global_daily_cap() -> None:
+    case = make_case(cost_spent=Money(0), cost_ceiling=Money(10_000))
+    action = _action(case_id=case.id, cost=Money(50))
+    ctx = _context(case=case, daily_spend=cost_ceiling.GLOBAL_DAILY_CAP - Money(100))
+    assert cost_ceiling.evaluate(action, ctx) is None
+
+
+def test_cost_ceiling_allows_a_cost_exactly_at_the_global_daily_cap() -> None:
+    case = make_case(cost_spent=Money(0), cost_ceiling=Money(10_000))
+    action = _action(case_id=case.id, cost=Money(50))
+    ctx = _context(case=case, daily_spend=cost_ceiling.GLOBAL_DAILY_CAP - Money(50))
+    assert cost_ceiling.evaluate(action, ctx) is None
+
+
+def test_cost_ceiling_denies_a_cost_that_would_exceed_the_global_daily_cap() -> None:
+    """The case's own ceiling is generous -- only the blast-radius backstop
+    is what fires here, sharing R8's own `rule_id` (POLICY-ENGINE SS3:
+    both halves belong to the same rule)."""
+    case = make_case(cost_spent=Money(0), cost_ceiling=Money(10_000))
+    action = _action(case_id=case.id, cost=Money(50))
+    ctx = _context(case=case, daily_spend=cost_ceiling.GLOBAL_DAILY_CAP - Money(49))
+    decision = cost_ceiling.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "cost_ceiling"
+    assert decision.inputs == {
+        "daily_spend_paise": cost_ceiling.GLOBAL_DAILY_CAP.paise - 49,
+        "action_cost_paise": 50,
+        "global_daily_cap_paise": cost_ceiling.GLOBAL_DAILY_CAP.paise,
+    }
+
+
+def test_cost_ceiling_checks_the_per_case_ceiling_before_the_global_cap() -> None:
+    """Both would fire -- the per-case ceiling's own `inputs` shape is
+    what should come back, since POLICY-ENGINE SS2.2's ordering principle
+    is "the most fundamental reason", and a case already over its own
+    budget is a more specific fault than the platform-wide backstop."""
+    case = make_case(cost_spent=Money(95), cost_ceiling=Money(100))
+    action = _action(case_id=case.id, cost=Money(10))
+    ctx = _context(case=case, daily_spend=cost_ceiling.GLOBAL_DAILY_CAP)
+    decision = cost_ceiling.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.inputs == {
+        "cost_spent_paise": 95,
+        "action_cost_paise": 10,
+        "cost_ceiling_paise": 100,
+    }
+
+
+# --- R9: mandate budget ------------------------------------------------------------
+
+
+def test_mandate_budget_allows_when_the_action_does_not_consume_it() -> None:
+    """Even against an already-exhausted mandate -- this rule only ever
+    applies to steps that declared `consumes_mandate_budget: true`."""
+    case = make_case()
+    action = _action(case_id=case.id, consumes_mandate_budget=False)
+    exhausted = _mandate(representations_used_this_cycle=4, representation_cap=4)
+    ctx = _context(case=case, mandate=exhausted)
+    assert mandate_budget.evaluate(action, ctx) is None
+
+
+def test_mandate_budget_allows_when_there_is_no_mandate() -> None:
+    """L1 one-time-payment cases have no mandate at all -- the same gap
+    domain_guards.py's own mandate checks already tolerate."""
+    case = make_case()
+    action = _action(case_id=case.id, consumes_mandate_budget=True)
+    assert mandate_budget.evaluate(action, _context(case=case, mandate=None)) is None
+
+
+def test_mandate_budget_allows_a_consuming_action_with_budget_remaining() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, consumes_mandate_budget=True)
+    mandate = _mandate()
+    ctx = _context(case=case, mandate=mandate)
+    assert mandate_budget.evaluate(action, ctx) is None
+
+
+def test_mandate_budget_denies_a_consuming_action_against_an_exhausted_mandate() -> None:
+    case = make_case()
+    action = _action(case_id=case.id, consumes_mandate_budget=True)
+    exhausted = _mandate(representations_used_this_cycle=4, representation_cap=4)
+    ctx = _context(case=case, mandate=exhausted)
+    decision = mandate_budget.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "mandate_exhausted"
+    assert decision.inputs == {
+        "mandate_id": exhausted.id,
+        "representation_cap": 4,
+        "representations_used_this_cycle": 4,
+    }
+
+
+# --- R10: approval threshold -------------------------------------------------------
+
+
+def test_approval_threshold_requires_approval_above_the_threshold() -> None:
+    assert approval_threshold.requires_approval(approval_threshold.APPROVAL_THRESHOLD + Money(1))
+
+
+def test_approval_threshold_does_not_require_approval_at_the_threshold() -> None:
+    assert not approval_threshold.requires_approval(approval_threshold.APPROVAL_THRESHOLD)
+
+
+def test_approval_threshold_passes_a_case_not_awaiting_approval() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    assert approval_threshold.evaluate(action, _context(case=case)) is None
+
+
+def test_approval_threshold_defers_a_case_awaiting_approval() -> None:
+    case = make_case(state=CaseState.AWAITING_APPROVAL, at_risk=Money(3_000_000))
+    action = _action(case_id=case.id)
+    decision = approval_threshold.evaluate(action, _context(case=case))
+    assert decision is not None
+    assert decision.verdict == Verdict.DEFER
+    assert decision.rule_id == "awaiting_approval"
+    assert decision.inputs == {"at_risk_paise": 3_000_000}
+    assert decision.defer_until is None

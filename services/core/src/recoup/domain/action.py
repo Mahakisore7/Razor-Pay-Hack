@@ -69,6 +69,13 @@ class Action:
     attempt: int
     channel: Channel
     category: ActionCategory
+    # R9 (POLICY-ENGINE SS3): read straight off the playbook step that
+    # produced this action, the same way `category` is. Defaults to
+    # `False`, mirroring `PlaybookStep.consumes_mandate_budget`'s own
+    # default -- most steps do not touch a mandate's representation
+    # budget at all, so leaving it unset is a real, common answer, not
+    # an oversight the way an unset `channel`/`category` would be.
+    consumes_mandate_budget: bool
     idempotency_key: str
     payload: ActionPayload
     cost: Money
@@ -86,6 +93,7 @@ class Action:
         payload: ActionPayload,
         cost: Money,
         due_at: datetime,
+        consumes_mandate_budget: bool = False,
     ) -> None:
         if attempt < 1:
             raise ValueError(f"Action.attempt must be >= 1, got {attempt}")
@@ -95,12 +103,14 @@ class Action:
         object.__setattr__(self, "attempt", attempt)
         object.__setattr__(self, "channel", channel)
         object.__setattr__(self, "category", category)
+        object.__setattr__(self, "consumes_mandate_budget", consumes_mandate_budget)
         object.__setattr__(self, "payload", payload)
         object.__setattr__(self, "cost", cost)
         object.__setattr__(self, "due_at", due_at)
-        # `category` is deliberately not part of the hash (DOMAIN-MODEL SS7):
-        # the same logical action recomputed after a crash must produce the
-        # same key so the duplicate is suppressed, which only holds if
-        # nothing but `case_id`, `step_id`, and `attempt` can influence it.
+        # `category`/`consumes_mandate_budget` are deliberately not part
+        # of the hash (DOMAIN-MODEL SS7): the same logical action
+        # recomputed after a crash must produce the same key so the
+        # duplicate is suppressed, which only holds if nothing but
+        # `case_id`, `step_id`, and `attempt` can influence it.
         key = hashlib.sha256(f"{case_id}|{step_id}|{attempt}".encode()).hexdigest()
         object.__setattr__(self, "idempotency_key", key)

@@ -119,6 +119,7 @@ def test_evaluate_always_returns_exactly_one_verdict_and_never_raises(
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=global_tripped, tripped_playbooks=frozenset()),
         rate_limit_tokens={},
+        daily_spend=Money(0),
     )
 
     decision = evaluate(action, ctx)
@@ -143,6 +144,7 @@ def test_no_consent_at_due_at_never_allows_a_non_exempt_channel(
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
+        daily_spend=Money(0),
     )
 
     decision = evaluate(action, ctx)
@@ -182,6 +184,7 @@ def test_evaluate_is_deterministic(
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
+        daily_spend=Money(0),
     )
 
     assert evaluate(action, ctx) == evaluate(action, ctx)
@@ -219,6 +222,7 @@ def test_an_allow_never_lets_cost_spent_exceed_the_ceiling(
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
+        daily_spend=Money(0),
     )
 
     decision = evaluate(action, ctx)
@@ -259,6 +263,7 @@ def test_a_control_arm_case_is_never_allowed(
         mandate=None,
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
+        daily_spend=Money(0),
     )
 
     decision = evaluate(action, ctx)
