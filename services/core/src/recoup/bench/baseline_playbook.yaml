@@ -41,17 +41,15 @@ steps:
       decline_retryable: true
 
   # The one generic dunning email -- same content regardless of decline
-  # category (no diagnosis-driven routing). Unlike the gateway-routed
-  # retries, an actual message send has a real (if nominal) per-send
-  # cost, modelled here rather than at zero like the rest of this
-  # playbook, so T3.6's cost-per-rupee-recovered metric has something
-  # non-trivial to divide by for this arm.
+  # category (no diagnosis-driven routing). Costed at METRICS-AND-KPIS
+  # SS3.1's own email rate (INR 0.02), not an invented value -- this is
+  # the same cost table T3.6's statistics and T3.7's report cite.
   - id: dunning_email
     channel: email
     timing:
       policy: fixed
       offset_hours: 2
-    expected_cost_paise: 20
+    expected_cost_paise: 2
 
   - id: retry_2
     channel: payment_retry

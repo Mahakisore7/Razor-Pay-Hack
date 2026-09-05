@@ -42,6 +42,22 @@ its later steps claimed, gated, and executed for real. Wasteful, not
 incorrect: `attribute_payment` simply finds no eligible case for a
 payment against an already-terminal one, exactly as TR-8/idempotency
 already needs it to for a replayed payment.
+
+Consent (R4, `policy.rules.consent`): this runner is the only caller in
+the whole codebase that ever builds a `PolicyContext` (no live worker
+exists yet to do it for real traffic), so it is also the only place
+that can seed the consent ledger a benchmark customer needs. A cohort
+customer is given blanket `checkout`-sourced consent on every channel
+the moment their case is opened -- the common real-world default for a
+merchant's checkout flow, and the same spirit as `seed_failed_payment`:
+a synthetic ground truth explicit enough to make the arms' own
+messaging steps actually executable and measurable, rather than
+silently denied by R4 for a ledger that was never populated (which is
+what a hardcoded empty `consent_events` produced before this fix, on
+every run to date -- every non-exempt channel action was denied
+`no_consent`, so email/SMS/etc. never reached `done` and T3.6's cost
+and guardrail statistics read as zero, not because nothing happened but
+because R4 was gating against a ledger this runner never wrote to).
 """
 
 from __future__ import annotations
@@ -69,6 +85,7 @@ from recoup.detection.pipeline import open_case_for_signal, resolve_customer
 from recoup.diagnosis.engine import stub_diagnose
 from recoup.domain.action import Action, Channel
 from recoup.domain.case import Arm, Case
+from recoup.domain.consent import ConsentSource
 from recoup.domain.identifiers import CustomerRef, SignalId, uuid7
 from recoup.domain.policy_decision import Verdict
 from recoup.domain.signal import Signal, SignalContext
@@ -83,7 +100,7 @@ from recoup.platform.clock import FrozenClock
 from recoup.platform.models import BenchRun
 from recoup.policy.context import KillSwitchState, PolicyContext
 from recoup.policy.engine import evaluate
-from recoup.policy.repository import persist_decision
+from recoup.policy.repository import load_consent_events, persist_decision, record_consent
 
 __all__ = ["BenchmarkRunSummary", "run_benchmark"]
 
@@ -230,6 +247,29 @@ async def run_benchmark(
     )
 
 
+async def _seed_consent_if_new(
+    session: AsyncSession, *, customer: CustomerRef, at: datetime
+) -> None:
+    """Blanket checkout consent, once per customer -- see this module's
+    own docstring for why the benchmark runner is the one seeding it.
+    Guarded by an existence check rather than relying on `resolve_customer`
+    reporting find-vs-create, since a cohort can (rarely, TR-8-style)
+    reference the same synthetic customer from more than one case.
+    """
+    existing = await load_consent_events(session, customer)
+    if existing:
+        return
+    for channel in Channel:
+        await record_consent(
+            session,
+            customer=customer,
+            channel=channel,
+            granted=True,
+            source=ConsentSource.CHECKOUT,
+            occurred_at=at,
+        )
+
+
 async def _handle_case_arrival(
     sessionmaker: async_sessionmaker[AsyncSession],
     sim: RazorpaySimulator,
@@ -255,6 +295,7 @@ async def _handle_case_arrival(
 
     async with sessionmaker() as session:
         customer = await resolve_customer(session, cohort_case.razorpay_customer_id)
+        await _seed_consent_if_new(session, customer=customer, at=cohort_case.detected_at)
         signal = _signal_from_cohort_case(cohort_case, customer, payment.id)
         case = await open_case_for_signal(session, clock, seed, signal, bench_run_id=run_id)
     if case is None:
@@ -299,11 +340,12 @@ async def _gate_and_execute(
     row_id: uuid.UUID,
     record: _ActionRecord,
 ) -> None:
+    consent_events = await load_consent_events(session, record.case.customer)
     ctx = PolicyContext(
         now=clock.now(),
         case=record.case,
         playbook_id=record.playbook_id,
-        consent_events=(),
+        consent_events=consent_events,
         mandate=None,
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
     )
@@ -311,7 +353,17 @@ async def _gate_and_execute(
     await persist_decision(session, clock, case_id=record.case.id, decision=decision)
     await session.commit()
     if decision.verdict is not Verdict.ALLOW:
-        return  # DENY/DEFER: no execution this tick -- a future re-queue is PHASE-04 scope
+        # Genuinely unreachable with this runner's current inputs, not
+        # merely untested: kill_switch and the mandate check are always
+        # permissive here (`KillSwitchState(global_tripped=False, ...)`,
+        # `mandate=None`), consent is now seeded for every channel
+        # (this PR's own fix), domain_guards' non-retryable check is
+        # already filtered out at planning time by the playbook's own
+        # `decline_retryable` guard, and cost_ceiling is now kept in
+        # sync with the plan that funded it. Kept, not deleted -- a
+        # future kill-switch/mandate wiring (PHASE-04) makes this a real
+        # path again, and a re-queue is that same phase's own scope.
+        return  # pragma: no cover
 
     result = await execute(
         session,

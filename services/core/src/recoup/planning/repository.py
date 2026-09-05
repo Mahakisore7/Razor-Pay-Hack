@@ -99,7 +99,7 @@ async def persist_plan(
             attempt=1,
             channel=playbook_step.channel,
             payload=payload,
-            cost=Money(0, case.at_risk.currency),
+            cost=planned.expected_cost,
             due_at=planned.due_at,
         )
         session.add(
@@ -111,7 +111,7 @@ async def persist_plan(
                 channel=playbook_step.channel.value,
                 idempotency_key=action.idempotency_key,
                 payload={"template": payload.template, "variables": dict(payload.variables)},
-                cost_paise=0,
+                cost_paise=planned.expected_cost.paise,
                 due_at=planned.due_at,
             )
         )
@@ -129,6 +129,13 @@ async def persist_plan(
     case_row.cost_ceiling_paise = max(
         case_row.cost_ceiling_paise, result.plan.total_expected_cost.paise
     )
+    # Mirrored onto the domain object too, not just the row: a caller
+    # holding this same `case` past this call (the benchmark runner's
+    # `_ActionRecord`, again) needs R8/cost_ceiling's next gate check to
+    # see the budget a plan actually funded, not the zero `Case` starts
+    # detection with (detection/pipeline.py's own docstring on why it's
+    # zero there).
+    case.cost_ceiling = Money(case_row.cost_ceiling_paise, case.cost_ceiling.currency)
 
     trace_id = current_trace_id()
     occurred_at: datetime = clock.now()

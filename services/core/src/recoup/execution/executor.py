@@ -195,6 +195,12 @@ async def execute(
         .where(CaseRow.id == case.id)
         .values(cost_spent_paise=CaseRow.cost_spent_paise + action.cost.paise)
     )
+    # Mirrors the row update onto the caller's own `Case` object: a
+    # long-lived caller holding this `case` across several actions (the
+    # benchmark runner's `_ActionRecord`, most notably) needs its
+    # `cost_spent` to reflect reality, or R8/cost_ceiling's next gate
+    # check re-evaluates against a permanently-stale zero.
+    case.record_cost(action.cost)
     await mark_done(session, clock, scheduled_action_id)
     await session.commit()
     return ExecutionResult(

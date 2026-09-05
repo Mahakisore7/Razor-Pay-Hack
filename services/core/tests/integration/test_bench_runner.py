@@ -34,7 +34,14 @@ from recoup.planning.planner import build_plan, select_playbook
 from recoup.planning.playbooks.loader import load_playbooks
 from recoup.planning.repository import persist_plan
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import AuditEventRow, BenchRun, CaseRow, ScheduledActionRow
+from recoup.platform.models import (
+    ActionRow,
+    AuditEventRow,
+    BenchRun,
+    CaseRow,
+    PolicyDecisionRow,
+    ScheduledActionRow,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -161,6 +168,81 @@ async def test_treatment_and_baseline_cases_produce_real_execution_activity(
     # rows -- some may still be `done`/`failed` depending on due_at vs.
     # the run's own final clock position, but real rows must exist.
     assert scheduled_rows
+
+
+async def test_messaging_channel_steps_are_never_denied_no_consent_or_cost_ceiling(
+    engine: AsyncEngine, redis_client: Redis
+) -> None:
+    """Regression test for a real bug this same PR found and fixed: the
+    runner used to build every `PolicyContext` with a hardcoded empty
+    `consent_events`, so R4 denied every non-exempt-channel action
+    (email, in the current playbooks) as `no_consent` on every run.
+    Fixing that alone only uncovered a second bug behind it -- the
+    `_ActionRecord.case` object's `cost_ceiling`/`cost_spent` were never
+    kept in sync with the row `persist_plan`/`execute` actually wrote,
+    so R8 then denied the same actions as `cost_ceiling` (comparing a
+    real cost against a permanently-stale zero). Both are fixed
+    (`bench/runner.py`'s consent seeding, `planning/repository.py` and
+    `execution/executor.py` mirroring `cost_ceiling`/`cost_spent` onto
+    the domain object) -- this asserts neither regresses, and that at
+    least one email action actually reached `done`.
+    """
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    summary = await run_benchmark(sessionmaker, redis_client, seed=808, size=150, start_at=_START)
+
+    async with sessionmaker() as session:
+        case_ids = (
+            (
+                await session.execute(
+                    select(CaseRow.id).where(CaseRow.bench_run_id == summary.run_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        action_ids = (
+            (await session.execute(select(ActionRow.id).where(ActionRow.case_id.in_(case_ids))))
+            .scalars()
+            .all()
+        )
+        denials = (
+            (
+                await session.execute(
+                    select(PolicyDecisionRow.rule_id)
+                    .where(PolicyDecisionRow.action_id.in_(action_ids))
+                    .where(PolicyDecisionRow.verdict != "allow")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert denials == []
+
+        email_action_ids = (
+            (
+                await session.execute(
+                    select(ActionRow.id).where(
+                        ActionRow.case_id.in_(case_ids), ActionRow.channel == "email"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert email_action_ids
+        done_email_actions = (
+            (
+                await session.execute(
+                    select(ScheduledActionRow).where(
+                        ScheduledActionRow.action_id.in_(email_action_ids),
+                        ScheduledActionRow.status == "done",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert done_email_actions
 
 
 async def test_some_retries_actually_recover_a_case(
