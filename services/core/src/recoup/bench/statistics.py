@@ -134,7 +134,12 @@ class EconomicStatistics:
 @dataclass(frozen=True, slots=True)
 class GuardrailStatistics:
     contact_fatigue_index: float  # mean contacts per *contacted* customer per 7-day window
-    opt_out_rate: float  # suppressed-for-opt-out / contacted; 0.0 this phase (R2 not yet wired)
+    # suppressed-for-opt-out / contacted. R2's `customer_opt_out` (T4.2)
+    # is real and wired -- this reads genuinely off `reason_code` -- but
+    # reads as 0.0 against this run's own cohort regardless, since
+    # nothing in `bench.runner`'s synthetic consent seeding ever issues
+    # an SMS-STOP revocation for it to catch.
+    opt_out_rate: float
     quiet_hour_violations: None  # not measurable this phase -- see module docstring
 
 

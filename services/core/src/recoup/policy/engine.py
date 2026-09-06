@@ -17,9 +17,10 @@ limits (matching R5-R10's position in POLICY-ENGINE SS2's own decision
 diagram), plus rate limits at the very end -- POLICY-ENGINE SS2's diagram
 omits R11 entirely, so it runs last as the final gate on the sending
 infrastructure itself, after every compliance and economic check has
-already passed. The rest of POLICY-ENGINE SS3's rule set (stopping
-rules) lands with the phase that actually needs it; `evaluate`'s dispatch
-loop does not change shape when it does -- only `_RULES` grows.
+already passed. T4.2 adds stopping rules (R2) right after the kill
+switch and before domain guards -- POLICY-ENGINE SS2's own diagram draws
+it there: if the case is already over, nothing downstream of that
+(consent, timing, cost, approval) is worth asking.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from recoup.policy.rules import (
     mandate_budget,
     quiet_hours,
     rate_limit,
+    stopping,
 )
 from recoup.policy.rules.base import Rule
 
@@ -45,6 +47,7 @@ __all__ = ["evaluate"]
 
 _RULES: tuple[Rule, ...] = (
     kill_switch.evaluate,
+    stopping.evaluate,
     domain_guards.evaluate,
     consent.evaluate,
     dnd.evaluate,

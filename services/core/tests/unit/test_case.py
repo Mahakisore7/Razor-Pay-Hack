@@ -107,6 +107,32 @@ def test_record_cost_rejects_breach_of_ceiling() -> None:
     assert case.cost_spent == Money(90)  # rejected spend leaves cost_spent unchanged
 
 
+# --- R2 attrition outcomes (POLICY-ENGINE SS3, PHASE-04 T4.2) --------------
+
+
+@pytest.mark.parametrize("target", [CaseState.LOST, CaseState.EXPIRED])
+def test_executing_may_reach_an_attrition_outcome_directly(target: CaseState) -> None:
+    """`max_attempts_reached`/`max_case_age` end a case without ever
+    passing through `AWAITING_OUTCOME` -- there was no payment window to
+    anchor an attribution to."""
+    case = make_case(state=CaseState.EXECUTING)
+    case.transition_to(target)
+    assert case.state == target
+    assert case.is_terminal
+
+
+@pytest.mark.parametrize("target", [CaseState.LOST, CaseState.EXPIRED])
+def test_awaiting_approval_may_also_reach_an_attrition_outcome(target: CaseState) -> None:
+    """`max_case_age` can fire on a case a human never got to before it
+    aged out of the approval queue (T4.2's own checklist: each stopping
+    rule cancels remaining actions regardless of which state it fires
+    from)."""
+    case = make_case(state=CaseState.PLANNED, arm=Arm.TREATMENT)
+    case.transition_to(CaseState.AWAITING_APPROVAL)
+    case.transition_to(target)
+    assert case.state == target
+
+
 # --- Arm assignment ----------------------------------------------------------
 
 

@@ -2,13 +2,17 @@
 steps and closes it `SUPPRESSED` with a mandatory `reason_code`.
 
 This is the mechanical operation, not the rule that decides when to
-call it. `customer_opt_out -> SUPPRESSED` is a stopping rule owned by
-the policy engine's R2 (POLICY-ENGINE SS3, PHASE-04 T4.2) -- reading the
-consent ledger and firing this automatically is that phase's scope, the
-same way `execution.suppression` is deliberately not the module that
-decides *when* to fire, only what happens once something has. Until
-T4.2 lands, a caller invokes `suppress_case` directly, the same way this
-module's own tests and T2.10's end-to-end test do.
+call it. `customer_opt_out -> SUPPRESSED` is one of eight stopping rules
+owned by the policy engine's R2 (POLICY-ENGINE SS3); T4.2 (`policy.
+rules.stopping`) is what decides *when* one fires, and `execution.
+stopping.apply_stopping_rule` is the general mechanical caller for all
+eight, `customer_opt_out` included -- it does not call `suppress_case`
+(their audit payloads name the rule differently: `reason_code` here,
+`rule_id` there, matching each one's own pre-existing callers), it is a
+parallel, independent path to the same `SUPPRESSED` outcome. This
+function's own direct callers -- T2.10's end-to-end test, this module's
+own tests, and any future caller that already knows the reason without
+going through the policy engine at all -- are what it still exists for.
 """
 
 from __future__ import annotations

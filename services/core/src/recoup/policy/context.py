@@ -3,15 +3,14 @@ once and passed in as values, never a repository a rule could query itself.
 A rule that touches the database is a rule that cannot be unit-tested or
 exactly replayed from a `PolicyDecision`'s recorded `inputs`.
 
-Scoped to exactly what T2.5/T4.1's rules (kill switch, domain guards,
-consent, DND, quiet hours, frequency cap, cost ceiling, mandate budget,
-approval threshold, rate limits) consume. POLICY-ENGINE SS4's full
-contract also carries `promise_to_pay` -- that arrives with R2 (stopping
-rules), in whichever phase builds it, not before. Notably absent for the
-same reason: a `playbook: Playbook` field. None of the rules here need
-more than the playbook's id (R1's per-playbook kill switch), and
-`recoup.planning` sits above `recoup.policy` in the layering contract --
-policy cannot import it.
+Scoped to exactly what T2.5/T4.1/T4.2's rules (kill switch, stopping
+rules, domain guards, consent, DND, quiet hours, frequency cap, cost
+ceiling, mandate budget, approval threshold, rate limits) consume.
+Notably absent: a `playbook: Playbook` field. No rule here needs more
+than a couple of scalars off it (R1's per-playbook kill switch id, R2's
+`max_attempts`/`max_case_age_days`), and `recoup.planning` sits above
+`recoup.policy` in the layering contract -- policy cannot import it, so
+those scalars are carried directly rather than the object they came from.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from recoup.domain.consent import ConsentEvent
 from recoup.domain.contact import ContactEvent
 from recoup.domain.mandate import Mandate
 from recoup.domain.money import Money
+from recoup.domain.promise import PromiseToPay
 
 __all__ = ["DndStatus", "KillSwitchState", "PolicyContext"]
 
@@ -80,3 +80,25 @@ class PolicyContext:
     # just this one -- the per-case ceiling's own blast-radius backstop
     # (POLICY-ENGINE SS3).
     daily_spend: Money
+    # R2 (POLICY-ENGINE SS3, PHASE-04 T4.2): the playbook's own static
+    # caps, carried as scalars rather than a `Playbook` reference (see
+    # this module's own docstring). Both are copied from the same
+    # playbook `case.playbook_id` already names, at the moment a
+    # `PolicyContext` is built -- a rule reads them, it never resolves
+    # `playbook_id` into a `Playbook` itself.
+    max_attempts: int
+    max_case_age_days: int
+    # R2: no dispute-tracking data source exists yet -- see
+    # `policy.rules.stopping`'s own docstring for why this stays a
+    # permissive default (`False`) in the one caller that builds a
+    # `PolicyContext` today, the same "no real backing source yet" shape
+    # as `mandate`/`dnd_status`/`rate_limit_tokens` above.
+    dispute_exists: bool
+    # R2: an account-closure signal from the rail -- same "no real
+    # backing source yet" shape as `dispute_exists` above.
+    account_closed: bool
+    # R2: `None` means no promise is on file, which is the common case
+    # and also this field's own permissive default until a capture path
+    # (a human agent's console action, an IVR flow) exists to populate it
+    # for real.
+    promise_to_pay: PromiseToPay | None

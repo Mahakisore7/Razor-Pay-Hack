@@ -219,6 +219,13 @@ async def test_messaging_channel_steps_are_never_denied_no_consent_or_cost_ceili
                     # table would make an unrelated, low-probability draw
                     # fail a test about a completely different bug.
                     .where(PolicyDecisionRow.rule_id != "awaiting_approval")
+                    # `already_paid` (R2, PHASE-04 T4.2): a case recovered
+                    # by its first `payment_retry` can still have a later
+                    # step already claimed by the time `apply_stopping_
+                    # rule` cancels the rest -- a real, correct DENY, and
+                    # exactly as unrelated to this test's own R4/R8
+                    # regression concern as `awaiting_approval` above.
+                    .where(PolicyDecisionRow.rule_id != "already_paid")
                 )
             )
             .scalars()

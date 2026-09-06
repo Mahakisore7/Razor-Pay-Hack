@@ -36,6 +36,7 @@ __all__ = [
     "DEFAULT_CLAIM_TTL",
     "cancel_pending_and_claimed",
     "claim_due_batch",
+    "defer_pending_and_claimed",
     "mark_done",
     "mark_failed",
     "reclaim_expired_claims",
@@ -166,6 +167,35 @@ async def cancel_pending_and_claimed(session: AsyncSession, case_id: CaseId) -> 
             ScheduledActionRow.status.in_(("pending", "claimed")),
         )
         .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+    return cast("CursorResult[Any]", result).rowcount
+
+
+async def defer_pending_and_claimed(
+    session: AsyncSession, case_id: CaseId, *, until: datetime
+) -> int:
+    """Every not-yet-`done`/`failed` scheduled action for `case_id` due
+    before `until` is pushed out to it, and any `claimed` row is
+    returned to `pending` so it cannot fire again on its now-stale claim
+    -- the mechanical half of R2's `promise_to_pay_active` ("DEFER whole
+    case to that date", POLICY-ENGINE SS3): a customer who has just
+    committed to paying Friday should not get Wednesday's SMS anyway.
+
+    A row already due no earlier than `until` is left alone -- rescheduling
+    it *earlier* than its own due date would defeat the point.
+    """
+    stmt = (
+        update(ScheduledActionRow)
+        .where(
+            ScheduledActionRow.case_id == case_id,
+            ScheduledActionRow.status.in_(("pending", "claimed")),
+            ScheduledActionRow.due_at < until,
+        )
+        .values(
+            status="pending", due_at=until, claimed_by=None, claimed_at=None, claim_expires_at=None
+        )
         .execution_options(synchronize_session=False)
     )
     result = await session.execute(stmt)
