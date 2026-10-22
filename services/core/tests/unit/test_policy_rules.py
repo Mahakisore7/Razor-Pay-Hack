@@ -4,9 +4,11 @@ in-memory: no database, no mocking.
 """
 
 from collections.abc import Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from recoup.domain.action import Action, ActionCategory, ActionPayload, Channel
 from recoup.domain.case import Arm, Case, CaseState
@@ -18,6 +20,7 @@ from recoup.domain.identifiers import ActionId, CaseId, uuid7
 from recoup.domain.mandate import Frequency, Mandate, MandateRail, MandateStatus
 from recoup.domain.money import Money
 from recoup.domain.policy_decision import Verdict
+from recoup.domain.promise import PromiseToPay
 from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.rules import (
     approval_threshold,
@@ -30,6 +33,7 @@ from recoup.policy.rules import (
     mandate_budget,
     quiet_hours,
     rate_limit,
+    stopping,
 )
 from tests.factories import make_case, make_customer_ref
 
@@ -77,6 +81,11 @@ def _context(
     rate_limit_tokens: Mapping[Channel, int] = MappingProxyType({}),
     daily_spend: Money = Money(0),
     now: datetime = _NOW,
+    max_attempts: int = 10,
+    max_case_age_days: int = 365,
+    dispute_exists: bool = False,
+    account_closed: bool = False,
+    promise_to_pay: PromiseToPay | None = None,
 ) -> PolicyContext:
     return PolicyContext(
         now=now,
@@ -90,6 +99,11 @@ def _context(
         kill_switch=kill_switch_state,
         rate_limit_tokens=rate_limit_tokens,
         daily_spend=daily_spend,
+        max_attempts=max_attempts,
+        max_case_age_days=max_case_age_days,
+        dispute_exists=dispute_exists,
+        account_closed=account_closed,
+        promise_to_pay=promise_to_pay,
     )
 
 
@@ -116,6 +130,7 @@ def _mandate(
     valid_until: date = date(2027, 1, 1),
     representations_used_this_cycle: int = 0,
     representation_cap: int = 4,
+    status: MandateStatus = MandateStatus.ACTIVE,
 ) -> Mandate:
     return Mandate(
         id="mandate_test",
@@ -125,9 +140,19 @@ def _mandate(
         frequency=Frequency.MONTHLY,
         valid_from=valid_from,
         valid_until=valid_until,
-        status=MandateStatus.ACTIVE,
+        status=status,
         representations_used_this_cycle=representations_used_this_cycle,
         representation_cap=representation_cap,
+    )
+
+
+def _revoked_sms_stop(case: Case) -> ConsentEvent:
+    return ConsentEvent(
+        customer=case.customer,
+        channel=Channel.SMS,
+        granted=False,
+        source=ConsentSource.SMS_STOP,
+        occurred_at=_NOW,
     )
 
 
@@ -807,3 +832,208 @@ def test_approval_threshold_defers_a_case_awaiting_approval() -> None:
     assert decision.rule_id == "awaiting_approval"
     assert decision.inputs == {"at_risk_paise": 3_000_000}
     assert decision.defer_until is None
+
+
+# --- R2: stopping rules ------------------------------------------------------------
+
+
+def test_stopping_passes_a_normal_case() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    assert stopping.evaluate(action, _context(case=case)) is None
+
+
+def test_stopping_denies_customer_opt_out_on_a_revoked_sms_stop_event() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id, channel=Channel.PAYMENT_RETRY)
+    ctx = _context(case=case, consent_events=(_revoked_sms_stop(case),))
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "customer_opt_out"
+    assert decision.defer_until is None
+
+
+def test_stopping_ignores_a_granted_sms_stop_sourced_event() -> None:
+    """`granted=True` on an `sms_stop`-sourced event should not occur in
+    practice, but the rule reads `granted`, not just `source` -- an
+    opt-out is a revocation, not merely a record with that source."""
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    granted = ConsentEvent(
+        customer=case.customer,
+        channel=Channel.SMS,
+        granted=True,
+        source=ConsentSource.SMS_STOP,
+        occurred_at=_NOW,
+    )
+    ctx = _context(case=case, consent_events=(granted,))
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_ignores_a_revoked_event_from_a_different_source() -> None:
+    """Only `SMS_STOP` triggers `customer_opt_out` -- a dashboard opt-out
+    on one channel is R4's own concern (consent per channel), not a
+    whole-case stop."""
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    revoked_elsewhere = ConsentEvent(
+        customer=case.customer,
+        channel=Channel.SMS,
+        granted=False,
+        source=ConsentSource.DASHBOARD,
+        occurred_at=_NOW,
+    )
+    ctx = _context(case=case, consent_events=(revoked_elsewhere,))
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_customer_opt_out_applies_regardless_of_the_actions_own_channel() -> None:
+    """ "Consent revoked on *any* channel" (POLICY-ENGINE SS3) -- an SMS
+    STOP still stops a payment_retry, even though R4 itself would never
+    have denied a payment_retry on consent grounds."""
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id, channel=Channel.PAYMENT_RETRY)
+    ctx = _context(case=case, consent_events=(_revoked_sms_stop(case),))
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "customer_opt_out"
+
+
+def test_stopping_denies_dispute_filed() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, dispute_exists=True)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "dispute_filed"
+
+
+@pytest.mark.parametrize("state", [CaseState.RECOVERED, CaseState.PARTIALLY_RECOVERED])
+def test_stopping_denies_already_paid_once_attribution_has_resolved_the_case(
+    state: CaseState,
+) -> None:
+    case = make_case(state=state)
+    action = _action(case_id=case.id)
+    decision = stopping.evaluate(action, _context(case=case))
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "already_paid"
+    assert decision.inputs == {"case_state": state.value}
+
+
+def test_stopping_denies_max_attempts_reached() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id, attempt=4)
+    ctx = _context(case=case, max_attempts=3)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "max_attempts_reached"
+    assert decision.inputs == {"attempt": 4, "max_attempts": 3}
+
+
+def test_stopping_allows_an_attempt_exactly_at_max_attempts() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id, attempt=3)
+    ctx = _context(case=case, max_attempts=3)
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_denies_max_case_age() -> None:
+    case = make_case(state=CaseState.EXECUTING)  # opened_at == _NOW (tests/factories.EPOCH)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, max_case_age_days=21, now=_NOW + timedelta(days=22))
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "max_case_age"
+
+
+def test_stopping_allows_a_case_exactly_at_max_case_age() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, max_case_age_days=21, now=_NOW + timedelta(days=21))
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_denies_mandate_revoked() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, mandate=_mandate(status=MandateStatus.REVOKED))
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "mandate_revoked"
+    assert decision.inputs == {"mandate_id": "mandate_test", "mandate_status": "revoked"}
+
+
+def test_stopping_denies_an_expired_mandate_the_same_as_a_revoked_one() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, mandate=_mandate(status=MandateStatus.EXPIRED))
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "mandate_revoked"
+
+
+def test_stopping_ignores_an_active_mandate() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, mandate=_mandate(status=MandateStatus.ACTIVE))
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_defers_the_whole_case_for_an_active_promise_to_pay() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    promise = PromiseToPay(case_id=case.id, committed_date=date(2026, 1, 5), recorded_at=_NOW)
+    ctx = _context(case=case, promise_to_pay=promise, now=_NOW)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DEFER
+    assert decision.rule_id == "promise_to_pay_active"
+    assert decision.inputs == {"committed_date": "2026-01-05"}
+    assert decision.defer_until == datetime.combine(date(2026, 1, 5), time.min, tzinfo=UTC)
+
+
+def test_stopping_ignores_a_promise_whose_date_has_already_arrived() -> None:
+    """ "A date still in the future" (POLICY-ENGINE SS3) -- a promise for
+    today or earlier no longer holds anything back."""
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    promise = PromiseToPay(case_id=case.id, committed_date=_NOW.date(), recorded_at=_NOW)
+    ctx = _context(case=case, promise_to_pay=promise, now=_NOW)
+    assert stopping.evaluate(action, ctx) is None
+
+
+def test_stopping_denies_customer_deceased_or_closed() -> None:
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, account_closed=True)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "customer_deceased_or_closed"
+
+
+def test_stopping_checks_customer_opt_out_before_dispute_filed() -> None:
+    """POLICY-ENGINE SS3's own table order -- the same "most fundamental
+    reason wins" rule SS2.2 states for the rule set as a whole applies
+    among R2's own eight conditions too."""
+    case = make_case(state=CaseState.EXECUTING)
+    action = _action(case_id=case.id)
+    ctx = _context(case=case, consent_events=(_revoked_sms_stop(case),), dispute_exists=True)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "customer_opt_out"
+
+
+def test_stopping_checks_already_paid_before_max_attempts_reached() -> None:
+    case = make_case(state=CaseState.RECOVERED)
+    action = _action(case_id=case.id, attempt=99)
+    ctx = _context(case=case, max_attempts=3)
+    decision = stopping.evaluate(action, ctx)
+    assert decision is not None
+    assert decision.rule_id == "already_paid"

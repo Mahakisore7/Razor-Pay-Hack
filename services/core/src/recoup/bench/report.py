@@ -202,8 +202,9 @@ def _exception_reason(case: CaseOutcome) -> str:
     if case.outcome_kind is None:
         return (
             f"no terminal outcome recorded -- case was still in state "
-            f"{case.case_state!r} when the run ended (case-expiry/"
-            f"stopping rules are PHASE-04 scope, POLICY-ENGINE R2)"
+            f"{case.case_state!r} when the run ended, having not yet hit "
+            f"any exit condition (attribution or one of POLICY-ENGINE "
+            f"R2's stopping rules, PHASE-04 T4.2)"
         )
     if case.reason_code is not None:
         return case.reason_code

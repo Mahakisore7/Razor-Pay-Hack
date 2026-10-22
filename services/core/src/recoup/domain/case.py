@@ -110,7 +110,15 @@ _TRANSITIONS: dict[CaseState, frozenset[CaseState]] = {
             CaseState.SUPPRESSED,
         }
     ),
-    CaseState.AWAITING_APPROVAL: frozenset({CaseState.EXECUTING, CaseState.SUPPRESSED}),
+    # LOST/EXPIRED reachable directly, alongside SUPPRESSED: a case can sit
+    # here with its one scheduled action still pending long enough to hit
+    # R2's `max_case_age` (POLICY-ENGINE SS3, PHASE-04 T4.2) before a human
+    # ever clears the approval queue -- `max_attempts_reached` cannot fire
+    # from this state (nothing has executed yet to attempt), but the table
+    # does not need to distinguish that; the rule itself does.
+    CaseState.AWAITING_APPROVAL: frozenset(
+        {CaseState.EXECUTING, CaseState.SUPPRESSED, CaseState.LOST, CaseState.EXPIRED}
+    ),
     CaseState.HOLDOUT: frozenset({CaseState.AWAITING_OUTCOME}),
     CaseState.EXECUTING: frozenset(
         {
@@ -118,6 +126,13 @@ _TRANSITIONS: dict[CaseState, frozenset[CaseState]] = {
             CaseState.AWAITING_OUTCOME,
             CaseState.ESCALATED,
             CaseState.SUPPRESSED,
+            # R2's own two attrition outcomes (POLICY-ENGINE SS3,
+            # PHASE-04 T4.2): a case whose attempts or age run out before
+            # `AWAITING_OUTCOME` is ever reached ends here directly,
+            # rather than needing to pass through an intermediate state
+            # that implies a payment attribution window that never opened.
+            CaseState.LOST,
+            CaseState.EXPIRED,
         }
     ),
     CaseState.ESCALATED: frozenset({CaseState.EXECUTING, CaseState.SUPPRESSED}),

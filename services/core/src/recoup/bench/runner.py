@@ -35,13 +35,19 @@ report built from this run's data must say so plainly rather than
 imply full realism. Wiring click-through/conversion modeling in is
 follow-up work, not a defect in this run's own correctness.
 
-Also known: nothing in this phase cancels a case's remaining scheduled
-steps once it resolves early (that is POLICY-ENGINE R2's stopping
-rules, PHASE-04 T4.2) -- a case recovered by its first retry still has
-its later steps claimed, gated, and executed for real. Wasteful, not
-incorrect: `attribute_payment` simply finds no eligible case for a
-payment against an already-terminal one, exactly as TR-8/idempotency
-already needs it to for a replayed payment.
+T4.2 (POLICY-ENGINE R2, stopping rules) closes the gap the previous
+paragraph's own history left open: `attribute_payment` resolves a case
+by loading and mutating its *own* fresh `Case`, never the one this
+runner cached in `_ActionRecord` at plan time, so a later scheduled
+action's gate call used to see a stale `EXECUTING` and sail through
+`domain_guards`' terminal check. `_gate_and_execute` now re-reads the
+row's `state` column fresh before every gate call for exactly this
+reason -- cheap (one column, not a full `Case` reconstruction), and it
+is the only field an out-of-band resolver (attribution, a future
+stopping-rule firing from a *different* action in the same case) can
+change out from under this runner's own cache. Once that is fresh,
+`stopping.evaluate`'s `already_paid` condition catches it, and
+`execution.stopping.apply_stopping_rule` cancels whatever is left.
 
 Consent (R4, `policy.rules.consent`): this runner is the only caller in
 the whole codebase that ever builds a `PolicyContext` (no live worker
@@ -85,7 +91,7 @@ from recoup.bench.holdout import persist_holdout
 from recoup.detection.pipeline import open_case_for_signal, resolve_customer
 from recoup.diagnosis.engine import stub_diagnose
 from recoup.domain.action import Action, Channel
-from recoup.domain.case import Arm, Case
+from recoup.domain.case import Arm, Case, CaseState
 from recoup.domain.consent import ConsentSource
 from recoup.domain.identifiers import CustomerRef, SignalId, uuid7
 from recoup.domain.money import Money
@@ -93,16 +99,18 @@ from recoup.domain.policy_decision import Verdict
 from recoup.domain.signal import Signal, SignalContext
 from recoup.execution.executor import ExecutionStatus, execute
 from recoup.execution.outbox import claim_due_batch
+from recoup.execution.stopping import apply_stopping_rule
 from recoup.gateway.simulator.simulator import RazorpaySimulator
 from recoup.planning.planner import build_plan, select_playbook
 from recoup.planning.playbooks.loader import load_playbooks
 from recoup.planning.playbooks.schema import Playbook
 from recoup.planning.repository import persist_plan
 from recoup.platform.clock import FrozenClock
-from recoup.platform.models import BenchRun
+from recoup.platform.models import BenchRun, CaseRow
 from recoup.policy.context import DndStatus, KillSwitchState, PolicyContext
 from recoup.policy.engine import evaluate
 from recoup.policy.repository import load_consent_events, persist_decision, record_consent
+from recoup.policy.rules.stopping import STOPPING_OUTCOMES
 
 __all__ = ["BenchmarkRunSummary", "run_benchmark"]
 
@@ -130,6 +138,12 @@ class _ActionRecord:
     action: Action
     case: Case
     playbook_id: str
+    # R2 (POLICY-ENGINE SS3, PHASE-04 T4.2): copied off the playbook once
+    # here rather than carried as a `Playbook` reference -- `PolicyContext`
+    # itself deliberately only ever takes the two scalars a stopping-rule
+    # check needs, not the object (see `policy.context`'s own docstring).
+    max_attempts: int
+    max_case_age_days: int
 
 
 def _signal_from_cohort_case(
@@ -331,10 +345,33 @@ async def _handle_case_arrival(
 
     for action, scheduled_id in realised:
         actions_by_scheduled_id[scheduled_id] = _ActionRecord(
-            action=action, case=case, playbook_id=playbook.id
+            action=action,
+            case=case,
+            playbook_id=playbook.id,
+            max_attempts=playbook.max_attempts,
+            max_case_age_days=playbook.max_case_age_days,
         )
         heapq.heappush(heap, (action.due_at, next(seq), "action", scheduled_id))
     return case
+
+
+async def _refresh_case_state(session: AsyncSession, case: Case) -> None:
+    """Syncs `case.state` (only) to whatever `cases.state` currently reads
+    in the database -- see this module's own docstring for why `case`
+    (this runner's own long-lived, per-case cached `_ActionRecord.case`)
+    can otherwise go stale relative to a resolution an *earlier* action
+    in the same case already triggered out of band (attribution, or a
+    stopping rule firing off a sibling action). A plain attribute
+    assignment, not `transition_to`: the real transition already
+    happened, legally, on a different in-memory `Case` in a different
+    module -- replaying it here through the transition table would
+    reject e.g. the direct `EXECUTING` -> `RECOVERED` jump attribution's
+    own `AWAITING_OUTCOME` intermediate step took, for a case that (from
+    this cached object's point of view) never left `EXECUTING`.
+    """
+    row = await session.get(CaseRow, case.id)
+    assert row is not None
+    case.state = CaseState(row.state)
 
 
 async def _gate_and_execute(
@@ -346,6 +383,7 @@ async def _gate_and_execute(
     row_id: uuid.UUID,
     record: _ActionRecord,
 ) -> None:
+    await _refresh_case_state(session, record.case)
     consent_events = await load_consent_events(session, record.case.customer)
     ctx = PolicyContext(
         now=clock.now(),
@@ -389,10 +427,37 @@ async def _gate_and_execute(
         # ceilings already gate the far smaller amounts a single case can
         # spend long before ₹5,00,000/day would ever matter.
         daily_spend=Money(0),
+        # R2 (POLICY-ENGINE SS3, PHASE-04 T4.2): `customer_opt_out`,
+        # `already_paid`, `max_attempts_reached`, and `max_case_age` are
+        # real and wired -- the playbook's own static caps and, thanks to
+        # `_refresh_case_state` above, a fresh `case.state`. The other
+        # four conditions stay permissive (no dispute ledger, mandate
+        # linkage, account-closure feed, or promise-to-pay capture path
+        # exists yet), the same "no real backing source yet" shape as
+        # `dnd_status`/`mandate`/`rate_limit_tokens` above.
+        max_attempts=record.max_attempts,
+        max_case_age_days=record.max_case_age_days,
+        dispute_exists=False,
+        account_closed=False,
+        promise_to_pay=None,
     )
     decision = evaluate(record.action, ctx)
     await persist_decision(session, clock, case_id=record.case.id, decision=decision)
     await session.commit()
+
+    if decision.rule_id in STOPPING_OUTCOMES:
+        # A stopping rule (R2) fired -- cancel (or, for
+        # `promise_to_pay_active`, defer) whatever else is scheduled for
+        # this case, not just deny this one action. `customer_opt_out`,
+        # `already_paid`, `max_attempts_reached`, and `max_case_age` are
+        # the four genuinely reachable here; `dispute_filed`,
+        # `mandate_revoked`, `promise_to_pay_active`, and
+        # `customer_deceased_or_closed` cannot fire against this run's
+        # own permissive context above and are exercised directly by
+        # `test_policy_rules.py`/`test_execution_stopping.py` instead.
+        await apply_stopping_rule(session, clock, case_id=record.case.id, decision=decision)
+        return
+
     if decision.verdict is not Verdict.ALLOW:
         # Provably unreachable for every rule but approval_threshold, not
         # merely untested: kill_switch and the mandate check are always

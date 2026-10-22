@@ -25,7 +25,13 @@ from recoup.domain.action import Channel
 from recoup.domain.identifiers import CaseId, SignalId, uuid7
 from recoup.domain.money import Currency, Money
 from recoup.domain.signal import LeakClass, Signal, SignalContext
-from recoup.execution.outbox import claim_due_batch, mark_done, mark_failed, reclaim_expired_claims
+from recoup.execution.outbox import (
+    claim_due_batch,
+    defer_pending_and_claimed,
+    mark_done,
+    mark_failed,
+    reclaim_expired_claims,
+)
 from recoup.platform.clock import FrozenClock
 from recoup.platform.models import ActionRow, AuditEventRow, ScheduledActionRow
 
@@ -378,6 +384,110 @@ async def test_mark_failed_records_the_error_and_transitions_to_failed(engine: A
     row = await _fetch(sessionmaker, scheduled_id)
     assert row.status == "failed"
     assert row.last_error == "gateway timeout"
+
+
+# --- defer_pending_and_claimed (R2 promise_to_pay_active, PHASE-04 T4.2) -----------
+
+
+async def test_defer_pending_and_claimed_pushes_a_pending_row_out(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_id = await _seed_case(sessionmaker, "cust_defer_pending")
+    (scheduled_id,) = await _seed_scheduled_actions(
+        sessionmaker, case_id, count=1, due_at=_CLOCK.now()
+    )
+    until = _CLOCK.now() + timedelta(days=3)
+
+    async with sessionmaker() as session:
+        deferred = await defer_pending_and_claimed(session, case_id, until=until)
+        await session.commit()
+
+    assert deferred == 1
+    row = await _fetch(sessionmaker, scheduled_id)
+    assert row.status == "pending"
+    assert row.due_at == until
+
+
+async def test_defer_pending_and_claimed_returns_a_claimed_row_to_pending(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_id = await _seed_case(sessionmaker, "cust_defer_claimed")
+    (scheduled_id,) = await _seed_scheduled_actions(
+        sessionmaker, case_id, count=1, due_at=_CLOCK.now()
+    )
+    async with sessionmaker() as session:
+        await claim_due_batch(session, _CLOCK, worker_id="worker-1", batch_size=10)
+    until = _CLOCK.now() + timedelta(days=3)
+
+    async with sessionmaker() as session:
+        deferred = await defer_pending_and_claimed(session, case_id, until=until)
+        await session.commit()
+
+    assert deferred == 1
+    row = await _fetch(sessionmaker, scheduled_id)
+    # Returned to `pending`, not left `claimed` -- a stale claim must not
+    # let this row fire on its old due date once it is reclaimed.
+    assert row.status == "pending"
+    assert row.due_at == until
+    assert row.claimed_by is None
+    assert row.claimed_at is None
+    assert row.claim_expires_at is None
+
+
+async def test_defer_pending_and_claimed_leaves_a_row_already_due_no_earlier_alone(
+    engine: AsyncEngine,
+) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_id = await _seed_case(sessionmaker, "cust_defer_untouched")
+    later_due_at = _CLOCK.now() + timedelta(days=10)
+    (scheduled_id,) = await _seed_scheduled_actions(
+        sessionmaker, case_id, count=1, due_at=later_due_at
+    )
+    until = _CLOCK.now() + timedelta(days=3)  # earlier than the row's own due_at
+
+    async with sessionmaker() as session:
+        deferred = await defer_pending_and_claimed(session, case_id, until=until)
+        await session.commit()
+
+    assert deferred == 0
+    row = await _fetch(sessionmaker, scheduled_id)
+    assert row.due_at == later_due_at  # untouched -- pulling it earlier would defeat the point
+
+
+async def test_defer_pending_and_claimed_ignores_a_done_row(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_id = await _seed_case(sessionmaker, "cust_defer_done")
+    (scheduled_id,) = await _seed_scheduled_actions(
+        sessionmaker, case_id, count=1, due_at=_CLOCK.now()
+    )
+    async with sessionmaker() as session:
+        await claim_due_batch(session, _CLOCK, worker_id="worker-1", batch_size=10)
+    async with sessionmaker() as session:
+        await mark_done(session, _CLOCK, scheduled_id)
+
+    async with sessionmaker() as session:
+        deferred = await defer_pending_and_claimed(
+            session, case_id, until=_CLOCK.now() + timedelta(days=3)
+        )
+        await session.commit()
+
+    assert deferred == 0
+    row = await _fetch(sessionmaker, scheduled_id)
+    assert row.status == "done"
+
+
+async def test_defer_pending_and_claimed_counts_every_row_it_touches(engine: AsyncEngine) -> None:
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    case_id = await _seed_case(sessionmaker, "cust_defer_count")
+    await _seed_scheduled_actions(sessionmaker, case_id, count=3, due_at=_CLOCK.now())
+
+    async with sessionmaker() as session:
+        deferred = await defer_pending_and_claimed(
+            session, case_id, until=_CLOCK.now() + timedelta(days=3)
+        )
+        await session.commit()
+
+    assert deferred == 3
 
 
 # --- concurrency: N workers, disjoint claims, no double-claim ----------------------

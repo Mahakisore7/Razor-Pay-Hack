@@ -193,6 +193,11 @@ async def _gate_and_execute(
         kill_switch=KillSwitchState(global_tripped=False, tripped_playbooks=frozenset()),
         rate_limit_tokens={},
         daily_spend=Money(0),
+        max_attempts=10,
+        max_case_age_days=365,
+        dispute_exists=False,
+        account_closed=False,
+        promise_to_pay=None,
     )
     for row in claimed:
         action = actions_by_scheduled_id[row.id]

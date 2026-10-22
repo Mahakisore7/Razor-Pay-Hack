@@ -58,6 +58,8 @@ def _context(
     kill_switch: KillSwitchState = _NO_KILL_SWITCH,
     rate_limit_tokens: Mapping[Channel, int] = MappingProxyType({}),
     daily_spend: Money = Money(0),
+    max_attempts: int = 10,
+    max_case_age_days: int = 365,
 ) -> PolicyContext:
     return PolicyContext(
         now=_NOW,
@@ -71,6 +73,11 @@ def _context(
         kill_switch=kill_switch,
         rate_limit_tokens=rate_limit_tokens,
         daily_spend=daily_spend,
+        max_attempts=max_attempts,
+        max_case_age_days=max_case_age_days,
+        dispute_exists=False,
+        account_closed=False,
+        promise_to_pay=None,
     )
 
 
@@ -113,8 +120,27 @@ def test_evaluate_returns_the_kill_switch_denial_before_checking_anything_else()
     assert decision.rule_id == "kill_switch_active"
 
 
-def test_evaluate_falls_through_to_domain_guard_when_kill_switch_passes() -> None:
+def test_evaluate_falls_through_to_stopping_when_kill_switch_passes() -> None:
+    """A `RECOVERED` case is caught by R2's own `already_paid` before it
+    ever reaches domain_guards' generic terminal-case check -- POLICY-
+    ENGINE SS2.2's "most fundamental reason" rule applied to R2 vs. R3,
+    the same way `test_evaluate_falls_through_to_domain_guard_...` below
+    isolates R3 using a terminal state R2 does not otherwise claim."""
     case = make_case(state=CaseState.RECOVERED)
+    action = _action(case_id=case.id)
+
+    decision = evaluate(action, _context(case=case))
+
+    assert decision.verdict == Verdict.DENY
+    assert decision.rule_id == "already_paid"
+
+
+def test_evaluate_falls_through_to_domain_guard_when_earlier_rules_pass() -> None:
+    """`SUPPRESSED`, unlike `RECOVERED`/`PARTIALLY_RECOVERED`, is not one
+    of R2's own outcomes checked directly against `case.state`
+    (`already_paid` is the only such check) -- domain_guards' own,
+    broader "any terminal case" test is what this isolates."""
+    case = make_case(state=CaseState.SUPPRESSED)
     action = _action(case_id=case.id)
 
     decision = evaluate(action, _context(case=case))
@@ -205,6 +231,11 @@ def test_evaluate_falls_through_to_frequency_cap_when_earlier_rules_pass() -> No
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
         daily_spend=Money(0),
+        max_attempts=10,
+        max_case_age_days=365,
+        dispute_exists=False,
+        account_closed=False,
+        promise_to_pay=None,
     )
 
     decision = evaluate(action, ctx)
@@ -280,6 +311,11 @@ def test_evaluate_falls_through_to_mandate_budget_when_earlier_rules_pass() -> N
         kill_switch=_NO_KILL_SWITCH,
         rate_limit_tokens={},
         daily_spend=Money(0),
+        max_attempts=10,
+        max_case_age_days=365,
+        dispute_exists=False,
+        account_closed=False,
+        promise_to_pay=None,
     )
 
     decision = evaluate(action, ctx)
